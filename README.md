@@ -5,11 +5,13 @@ project's `draft/` directory.
 
 ## Commands
 
-- `:DraftPreview`, `:Dp`, or `:Draft` toggles a borderless macOS preview window
-  for the open `draft/main.tex`. With macOS Accessibility permission it tiles
-  the active terminal and preview across the usable display (55/45), then
-  restores the terminal's prior geometry when toggled closed. Without
-  permission the preview still opens, but window tiling is skipped.
+- `:DraftPreview`, `:Dp`, or `:Draft` toggles a native macOS companion window
+  for the open `draft/main.tex`. It opens beside the terminal running this
+  Neovim session when possible, without changing the terminal's size or
+  position. The preview can be moved and resized normally; its size is retained
+  while it is open. When the terminal moves or resizes, the preview follows
+  while keeping its own size. The accessory-style preview hides when another
+  app is activated and returns when you switch back to the terminal.
 - `:DraftBuild` or `:Db` builds `draft/main.tex` in the background.
 
 The preview updates while typing and supports paragraphs, `\section{}`,
@@ -25,7 +27,10 @@ file or working directory looking for `draft/main.tex`.
 ## Try it
 
 On macOS, with Neovim, Swift, `latexmk`, and a LaTeX installation available.
-Allow the preview helper in the macOS Accessibility prompt for window tiling.
+Accessibility permission is optional. It lets the helper identify and observe
+the terminal window so the preview can follow its movement and resizing;
+without permission, the preview still opens at a sensible screen position but
+cannot track the terminal.
 
 ```sh
 nvim --cmd "set runtimepath^=$(pwd)" example/draft/main.tex

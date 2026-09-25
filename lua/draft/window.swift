@@ -3,27 +3,9 @@ import ApplicationServices
 import Darwin
 import WebKit
 
-struct Frame: Codable {
-    let x: Double
-    let y: Double
-    let width: Double
-    let height: Double
-
-    init(_ rect: NSRect) {
-        x = rect.origin.x
-        y = rect.origin.y
-        width = rect.size.width
-        height = rect.size.height
-    }
-
-    var rect: NSRect { NSRect(x: x, y: y, width: width, height: height) }
-}
-
-struct LayoutState: Codable {
+struct PreviewState: Codable {
     let pid: Int32
     let terminalPID: pid_t?
-    let originalFrame: Frame?
-    let tiled: Bool
     let status: String?
 }
 
@@ -88,16 +70,6 @@ func terminalApplication(frontmost: NSRunningApplication?) -> NSRunningApplicati
     return nil
 }
 
-func readState(_ path: String) -> LayoutState? {
-    guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
-    return try? JSONDecoder().decode(LayoutState.self, from: data)
-}
-
-func writeState(_ state: LayoutState, to path: String) {
-    guard let data = try? JSONEncoder().encode(state) else { return }
-    try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
-}
-
 func axWindow(_ app: NSRunningApplication) -> AXUIElement? {
     let element = AXUIElementCreateApplication(app.processIdentifier)
     var value: CFTypeRef?
@@ -112,108 +84,145 @@ func axWindow(_ app: NSRunningApplication) -> AXUIElement? {
     return nil
 }
 
-func framesExactlyMatch(_ actual: NSRect, _ expected: NSRect) -> Bool {
-    abs(actual.minX - expected.minX) < 1 && abs(actual.minY - expected.minY) < 1
-        && abs(actual.width - expected.width) < 1 && abs(actual.height - expected.height) < 1
-}
-
-func frameDescription(_ rect: NSRect) -> String {
-    "x=\(Int(rect.minX.rounded())) y=\(Int(rect.minY.rounded())) w=\(Int(rect.width.rounded())) h=\(Int(rect.height.rounded()))"
-}
-
-func windowNumber(_ window: AXUIElement) -> CGWindowID? {
-    var value: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(window, "AXWindowNumber" as CFString, &value) == .success,
-          let number = value as? NSNumber else { return nil }
-    return CGWindowID(number.uint32Value)
-}
-
-func quartzFrame(pid: pid_t, window: AXUIElement) -> NSRect? {
+func terminalFrame(pid: pid_t, window: AXUIElement) -> NSRect? {
     let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
-    let number = windowNumber(window)
+    var value: CFTypeRef?
+    let number: CGWindowID? = AXUIElementCopyAttributeValue(window, "AXWindowNumber" as CFString, &value) == .success
+        ? (value as? NSNumber).map { CGWindowID($0.uint32Value) }
+        : nil
     let candidates = windows.filter { info in
         (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
             && (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
     }
-    let info = (number.flatMap { id in
+    let info = number.flatMap { id in
         candidates.first(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == id })
-    }) ?? candidates.first
-    guard let value = info?[kCGWindowBounds as String],
-          CFGetTypeID(value as CFTypeRef) == CFDictionaryGetTypeID() else { return nil }
-    let dictionary = unsafeBitCast(value as CFTypeRef, to: CFDictionary.self)
-    guard let bounds = CGRect(dictionaryRepresentation: dictionary) else { return nil }
+    } ?? candidates.first
+    guard let boundsValue = info?[kCGWindowBounds as String],
+          CFGetTypeID(boundsValue as CFTypeRef) == CFDictionaryGetTypeID() else { return nil }
+    let bounds = unsafeBitCast(boundsValue as CFTypeRef, to: CFDictionary.self)
+    guard let quartz = CGRect(dictionaryRepresentation: bounds) else { return nil }
     let top = NSScreen.screens.first(where: { $0 == NSScreen.main })?.frame.maxY ?? 0
-    return NSRect(x: bounds.minX, y: top - bounds.maxY, width: bounds.width, height: bounds.height)
+    return NSRect(x: quartz.minX, y: top - quartz.maxY, width: quartz.width, height: quartz.height)
 }
 
-func setAXFrame(_ rect: NSRect, on window: AXUIElement, pid: pid_t) -> NSRect? {
-    let top = NSScreen.screens.first(where: { $0 == NSScreen.main })?.frame.maxY ?? 0
-    var requested = rect
-    for _ in 0..<4 {
-        var point = CGPoint(x: requested.minX, y: top - requested.maxY)
-        var size = CGSize(width: requested.width, height: requested.height)
-        guard let pointValue = AXValueCreate(.cgPoint, &point),
-              let sizeValue = AXValueCreate(.cgSize, &size),
-              AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue) == .success,
-              AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, pointValue) == .success else { return nil }
-        Thread.sleep(forTimeInterval: 0.1)
-        guard let actual = quartzFrame(pid: pid, window: window) else { return nil }
-        if framesExactlyMatch(actual, rect) { return actual }
-        requested = NSRect(
-            x: requested.minX + rect.minX - actual.minX,
-            y: requested.minY + rect.minY - actual.minY,
-            width: requested.width + rect.width - actual.width,
-            height: requested.height + rect.height - actual.height
-        )
+func companionFrame(terminal: NSRect, size: NSSize) -> NSRect {
+    let center = NSPoint(x: terminal.midX, y: terminal.midY)
+    let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) ?? NSScreen.main
+    let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 900)
+    let width = min(size.width, visible.width)
+    let height = min(size.height, visible.height)
+    let gap: CGFloat = 12
+    let rightRoom = visible.maxX - terminal.maxX
+    let leftRoom = terminal.minX - visible.minX
+    let x: CGFloat
+    if rightRoom >= width + gap || rightRoom >= leftRoom {
+        x = min(max(terminal.maxX + gap, visible.minX), visible.maxX - width)
+    } else {
+        x = min(max(terminal.minX - gap - width, visible.minX), visible.maxX - width)
     }
-    return quartzFrame(pid: pid, window: window)
+    let y = min(max(terminal.maxY - height, visible.minY), visible.maxY - height)
+    return NSRect(x: x, y: y, width: width, height: height)
 }
 
-func restoreTerminal(_ state: LayoutState) -> Bool {
-    guard state.tiled else { return true }
-    guard let pid = state.terminalPID, let original = state.originalFrame, AXIsProcessTrusted() else { return false }
-    let app = NSRunningApplication(processIdentifier: pid)
-    if let app, let window = axWindow(app) {
-        guard let actual = setAXFrame(original.rect, on: window, pid: pid), framesExactlyMatch(actual, original.rect) else { return false }
-        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-        app.activate(options: [])
-        return true
-    }
-    return false
+func readState(_ path: String) -> PreviewState? {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+    return try? JSONDecoder().decode(PreviewState.self, from: data)
+}
+
+func writeState(_ state: PreviewState, to path: String) {
+    guard let data = try? JSONEncoder().encode(state) else { return }
+    try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
 }
 
 @discardableResult
 func closeWorkspace(_ statePath: String) -> Bool {
     guard let state = readState(statePath) else { return true }
-    let restored = restoreTerminal(state)
     try? FileManager.default.removeItem(atPath: statePath)
     kill(state.pid, SIGTERM)
-    return restored
+    return true
+}
+
+final class TerminalFollower {
+    private let pid: pid_t
+    private let window: AXUIElement
+    private weak var preview: NSWindow?
+    private var observer: AXObserver?
+    private var previousFrame: NSRect?
+
+    init?(app: NSRunningApplication, window: AXUIElement, preview: NSWindow) {
+        pid = app.processIdentifier
+        self.window = window
+        self.preview = preview
+        guard AXObserverCreate(pid, { _, element, _, refcon in
+            guard let refcon else { return }
+            let follower = Unmanaged<TerminalFollower>.fromOpaque(refcon).takeUnretainedValue()
+            follower.terminalGeometryChanged(element)
+        }, &observer) == .success, let observer else { return nil }
+        let source = AXObserverGetRunLoopSource(observer)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        AXObserverAddNotification(observer, window, kAXMovedNotification as CFString, context)
+        AXObserverAddNotification(observer, window, kAXResizedNotification as CFString, context)
+        previousFrame = terminalFrame(pid: pid, window: window)
+    }
+
+    private func terminalGeometryChanged(_ element: AXUIElement) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let preview = self.preview,
+                  let next = terminalFrame(pid: self.pid, window: element),
+                  let previous = self.previousFrame else { return }
+            self.previousFrame = next
+            guard next.origin != previous.origin || next.size != previous.size else { return }
+            let destination = companionFrame(terminal: next, size: preview.frame.size)
+            preview.setFrameOrigin(destination.origin)
+        }
+    }
 }
 
 final class PreviewWindow: NSObject, NSWindowDelegate {
-    let window: NSWindow
-    let state: LayoutState
+    let window: NSPanel
     let statePath: String
+    let terminalPID: pid_t?
+    let terminalAXWindow: AXUIElement?
+    var follower: TerminalFollower?
+    private var activationObserver: NSObjectProtocol?
 
-    init(url: URL, frame: NSRect, state: LayoutState, statePath: String) {
-        self.state = state
+    init(url: URL, frame: NSRect, statePath: String, terminal: NSRunningApplication?, terminalAXWindow: AXUIElement?) {
         self.statePath = statePath
+        terminalPID = terminal?.processIdentifier
+        self.terminalAXWindow = terminalAXWindow
         let webView = WKWebView(frame: .zero)
-        window = NSWindow(
+        window = NSPanel(
             contentRect: frame,
-            styleMask: [.borderless, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         super.init()
+        window.title = "Draft"
+        window.minSize = NSSize(width: 320, height: 240)
         window.contentView = webView
-        window.isMovableByWindowBackground = true
         window.delegate = self
         window.setFrame(frame, display: true)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        window.orderFrontRegardless()
         webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+
+        if let terminal, let terminalAXWindow {
+            follower = TerminalFollower(app: terminal, window: terminalAXWindow, preview: window)
+        }
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            if app.processIdentifier == self.terminalPID || app.processIdentifier == getpid() {
+                self.window.orderFrontRegardless()
+            } else {
+                self.window.orderOut(nil)
+            }
+        }
 
         var lastModified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? nil
         Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak webView] _ in
@@ -226,7 +235,6 @@ final class PreviewWindow: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        _ = restoreTerminal(state)
         try? FileManager.default.removeItem(atPath: statePath)
         NSApplication.shared.terminate(nil)
     }
@@ -244,64 +252,41 @@ if arguments.first == "--close", arguments.count == 2 {
     if FileManager.default.fileExists(atPath: statePath) {
         exit(closeWorkspace(statePath) ? EXIT_SUCCESS : EXIT_FAILURE)
     } else {
-        let frontmost = NSWorkspace.shared.frontmostApplication
-        let terminal = terminalApplication(frontmost: frontmost)
-        let prompt = [kAXTrustedCheckOptionPrompt.takeRetainedValue() as String: true] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(prompt)
+        let terminal = terminalApplication(frontmost: NSWorkspace.shared.frontmostApplication)
+        let trusted = AXIsProcessTrusted()
         let targetWindow = trusted ? terminal.flatMap(axWindow) : nil
-        let original = targetWindow.flatMap { window in
-            terminal.map { quartzFrame(pid: $0.processIdentifier, window: window) } ?? nil
+        let frame = targetWindow.flatMap { window in
+            terminal.map { terminalFrame(pid: $0.processIdentifier, window: window) } ?? nil
         }
-        let screen = original.flatMap { frame in
-            NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: frame.midX, y: frame.midY)) })
-        } ?? NSScreen.main
-        let fallback = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 760, height: 900)
-        let fallbackWidth = min(760, fallback.width)
-        let fallbackHeight = min(900, fallback.height)
-        var previewFrame = NSRect(
-            x: fallback.midX - fallbackWidth / 2,
-            y: fallback.midY - fallbackHeight / 2,
-            width: fallbackWidth,
-            height: fallbackHeight
-        )
-        var tiled = false
-        var status: String?
-
+        let status: String?
         if !trusted {
-            status = "Allow draft.nvim's preview helper in the macOS Accessibility prompt, then toggle the preview off and on to tile the terminal. The preview is open without tiling."
-        } else if let original, let targetWindow, let screen, let terminal {
-            let visible = screen.visibleFrame
-            let gap: CGFloat = 2
-            let terminalWidth = (visible.width - gap) * 0.55
-            let previewWidth = visible.width - gap - terminalWidth
-            let terminalFrame = NSRect(x: visible.minX, y: visible.minY, width: terminalWidth, height: visible.height)
-            previewFrame = NSRect(x: visible.minX + terminalWidth + gap, y: visible.minY, width: previewWidth, height: visible.height)
-            if let actual = setAXFrame(terminalFrame, on: targetWindow, pid: terminal.processIdentifier) {
-                tiled = framesExactlyMatch(actual, terminalFrame)
-                if !tiled {
-                    status = "Terminal frame mismatch; expected \(frameDescription(terminalFrame)), got \(frameDescription(actual))."
-                }
-            }
-            if !tiled {
-                _ = setAXFrame(original, on: targetWindow, pid: terminal.processIdentifier)
-                status = status ?? "Could not arrange the active terminal window. Check Accessibility access in System Settings → Privacy & Security → Accessibility. The preview is open."
-            }
+            status = "Accessibility access is optional; allow the preview helper in System Settings → Privacy & Security → Accessibility to follow terminal moves and resizes. The preview is open without tracking."
+        } else if targetWindow == nil || frame == nil {
+            status = "Could not identify the terminal window. The preview is open without tracking."
         } else {
-            status = "Could not identify the active terminal window. The preview is open without tiling."
+            status = nil
+        }
+        let screen = frame.flatMap { rect in
+            NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: rect.midX, y: rect.midY)) })
+        } ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 900)
+        let initialSize = NSSize(width: min(680, visible.width), height: min(820, visible.height))
+        let previewFrame: NSRect
+        if let frame {
+            previewFrame = companionFrame(terminal: frame, size: initialSize)
+        } else {
+            previewFrame = NSRect(x: visible.midX - initialSize.width / 2, y: visible.midY - initialSize.height / 2, width: initialSize.width, height: initialSize.height)
         }
 
-        let state = LayoutState(
-            pid: getpid(),
-            terminalPID: terminal?.processIdentifier ?? terminalPID,
-            originalFrame: tiled ? original.map(Frame.init) : nil,
-            tiled: tiled,
-            status: status
-        )
+        let state = PreviewState(pid: getpid(), terminalPID: terminal?.processIdentifier ?? terminalPID, status: status)
         writeState(state, to: statePath)
-        let preview = PreviewWindow(url: URL(fileURLWithPath: htmlPath), frame: previewFrame, state: state, statePath: statePath)
-        if tiled, let terminal {
-            terminal.activate(options: [])
-        }
+        let preview = PreviewWindow(
+            url: URL(fileURLWithPath: htmlPath),
+            frame: previewFrame,
+            statePath: statePath,
+            terminal: terminal,
+            terminalAXWindow: targetWindow
+        )
         withExtendedLifetime(preview) {
             app.run()
         }

@@ -79,7 +79,7 @@ close_preview = function()
   if preview.binary and preview.state and vim.fn.executable(preview.binary) == 1 then
     local result = vim.system({ preview.binary, "--close", preview.state }):wait()
     if result.code ~= 0 then
-      vim.notify("draft.nvim: preview closed, but terminal geometry could not be restored", vim.log.levels.ERROR)
+      vim.notify("draft.nvim: could not close the preview helper", vim.log.levels.ERROR)
     end
   end
   preview.pid, preview.starting = nil, false
