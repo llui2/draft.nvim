@@ -1,19 +1,33 @@
 \documentclass{article}
 \usepackage{amsmath}
 
-\title{A Small Draft}
-\author{Example Author}
-\date{}
-
 \begin{document}
-\maketitle
 
-This example is a regular LaTeX manuscript. Its source remains
-\texttt{draft/main.tex}, and its build files are kept out of the way.
+\section{A Small Draft}
 
-For a simple mathematical statement, let
+This example is a regular LaTeX manuscript. Its source remains in
+\texttt{draft/main.tex}, while temporary build files stay in the hidden
+\texttt{.build} directory. The preview follows the source as it changes, so
+you can keep writing without leaving Neovim.
+
+The inline identity $e^{i\pi} + 1 = 0$ is a familiar example of a compact
+mathematical expression rendered alongside ordinary prose.
+
+\subsection{A few equations}
+
+The Gaussian integral is
 \[
-  e^{i\pi} + 1 = 0.
+  \int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}.
+\]
+
+For positive integers, the sum of the first $n$ integers is
+\[
+  \sum_{k=1}^{n} k = \frac{n(n+1)}{2}.
+\]
+
+Finally, Euler's formula relates the exponential and trigonometric functions:
+\[
+  e^{i\theta} = \cos(\theta) + i\sin(\theta).
 \]
 
 \end{document}

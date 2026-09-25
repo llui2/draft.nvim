@@ -1,27 +1,30 @@
 # draft.nvim
 
-A small Neovim plugin foundation for writing standard LaTeX in a research
-project's `draft/` directory. The live rendered preview is not implemented yet.
+A minimal Neovim writing setup for standard LaTeX manuscripts in a research
+project's `draft/` directory.
 
-## Current commands
+## Commands
 
-- `:Draft` or `:DraftPreview` detects the project and reports that live preview
-  is not available yet.
-- `:DraftBuild` runs `latexmk` asynchronously for `draft/main.tex`. Auxiliary
-  files go in `draft/.build/`; on success, the generated PDF is copied to
-  `draft/main.pdf`.
+- `:DraftPreview`, `:Dp`, or `:Draft` toggles a borderless macOS preview window
+  for the open `draft/main.tex`.
+- `:DraftBuild` or `:Db` builds `draft/main.tex` in the background.
 
-Project detection walks upward from the current file (or working directory)
-looking for `draft/main.tex`. The expected manuscript files are
-`draft/main.tex` and `draft/references.bib`.
+The preview updates while typing and supports paragraphs, `\section{}`,
+`\subsection{}`, inline `$...$`, and display `\[...\]` math. KaTeX is loaded
+from jsDelivr, so the first preview requires an internet connection. The
+preview is intentionally not a full LaTeX renderer.
+
+Saving `draft/main.tex` starts a background PDF build. Builds are serialized;
+after a successful build the PDF is copied to `draft/main.pdf`, while auxiliary
+files stay in `draft/.build/`. Project detection walks upward from the current
+file or working directory looking for `draft/main.tex`.
 
 ## Try it
 
-Open Neovim in this repository with the plugin on the runtime path, for example:
+On macOS, with Neovim, Swift, `latexmk`, and a LaTeX installation available:
 
 ```sh
 nvim --cmd "set runtimepath^=$(pwd)" example/draft/main.tex
 ```
 
-Then run `:DraftBuild`. The example requires `latexmk` and a LaTeX installation
-with `pdflatex`.
+Run `:Dp` to open the preview, type to update it, and save to build the PDF.

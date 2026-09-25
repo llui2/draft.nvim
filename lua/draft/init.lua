@@ -1,4 +1,8 @@
 local M = {}
+local preview = { pid = nil, starting = false, generation = 0, buffer = nil, timer = nil, html = nil }
+local building = false
+local build_pending
+local close_preview, watch_preview, open_preview_window
 
 local function project_draft_dir()
   local buffer = vim.api.nvim_buf_get_name(0)
@@ -27,19 +31,124 @@ local function get_draft_dir()
 end
 
 function M.preview()
-  if not get_draft_dir() then
-    return
-  end
-  vim.notify("draft.nvim: live preview is not implemented yet; use :DraftBuild for the PDF")
-end
-
-function M.build()
   local draft_dir = get_draft_dir()
   if not draft_dir then
     return
   end
 
+  if preview.pid or preview.starting then
+    close_preview()
+    return
+  end
+
+  local source = vim.api.nvim_buf_get_name(0)
+  if vim.fs.basename(source) ~= "main.tex" or vim.fs.dirname(source) ~= draft_dir then
+    vim.notify("draft.nvim: open draft/main.tex to preview it", vim.log.levels.ERROR)
+    return
+  end
+
+  local runtime = vim.api.nvim_get_runtime_file("lua/draft/preview.html", false)[1]
+  local window_script = vim.api.nvim_get_runtime_file("lua/draft/window.swift", false)[1]
+  if not runtime or not window_script then
+    vim.notify("draft.nvim: preview assets are missing", vim.log.levels.ERROR)
+    return
+  end
+
   vim.fn.mkdir(vim.fs.joinpath(draft_dir, ".build"), "p")
+  preview.html = vim.fs.joinpath(draft_dir, ".build", "preview.html")
+  local buffer = vim.api.nvim_get_current_buf()
+  watch_preview(buffer, runtime)
+
+  local binary = vim.fs.joinpath(draft_dir, ".build", "draft-preview")
+  open_preview_window(binary, preview.html, window_script)
+end
+
+close_preview = function()
+  preview.generation = preview.generation + 1
+  if preview.pid then
+    vim.uv.kill(preview.pid, "sigterm")
+  end
+  preview.pid, preview.starting = nil, false
+  if preview.timer then
+    preview.timer:stop()
+    preview.timer:close()
+    preview.timer = nil
+  end
+  if preview.buffer then
+    vim.api.nvim_del_augroup_by_id(preview.buffer)
+    preview.buffer = nil
+  end
+  vim.notify("draft.nvim: preview closed")
+end
+
+watch_preview = function(buffer, runtime)
+  local function update()
+    if not vim.api.nvim_buf_is_valid(buffer) then
+      return
+    end
+    local text = table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+    local template = table.concat(vim.fn.readfile(runtime), "\n")
+    local encoded = vim.json.encode(text):gsub("</", "<\\/")
+    local html = template:gsub("__SOURCE__", function()
+      return encoded
+    end)
+    vim.fn.writefile(vim.split(html, "\n", { plain = true }), preview.html)
+  end
+
+  preview.buffer = vim.api.nvim_create_augroup("DraftPreview", { clear = true })
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    group = preview.buffer,
+    buffer = buffer,
+    callback = function()
+      if not preview.timer then
+        preview.timer = vim.uv.new_timer()
+      end
+      preview.timer:stop()
+      preview.timer:start(100, 0, vim.schedule_wrap(update))
+    end,
+  })
+  update()
+end
+
+open_preview_window = function(binary, html, window_script)
+  local function open()
+    local process
+    process = vim.system({ binary, html }, { detach = true }, function()
+      vim.schedule(function()
+        if preview.pid == process.pid then
+          preview.pid = nil
+        end
+      end)
+    end)
+    preview.pid = process.pid
+    vim.notify("draft.nvim: preview opened")
+  end
+
+  if vim.fn.executable(binary) == 1 and vim.fn.getftime(binary) >= vim.fn.getftime(window_script) then
+    open()
+    return
+  end
+
+  preview.starting = true
+  preview.generation = preview.generation + 1
+  local generation = preview.generation
+  vim.system({ "swiftc", "-O", window_script, "-o", binary }, { text = true }, function(result)
+    vim.schedule(function()
+      if generation ~= preview.generation then
+        return
+      end
+      preview.starting = false
+      if result.code ~= 0 then
+        vim.notify("draft.nvim: could not compile preview window\n" .. (result.stderr or result.stdout), vim.log.levels.ERROR)
+        return
+      end
+      open()
+    end)
+  end)
+end
+
+local function run_build(draft_dir)
+  building = true
   local command = {
     "latexmk",
     "-pdf",
@@ -52,23 +161,39 @@ function M.build()
 
   vim.system(command, { cwd = draft_dir, text = true }, function(result)
     vim.schedule(function()
-      if result.code ~= 0 then
+      if result.code == 0 then
+        local built_pdf = vim.fs.joinpath(draft_dir, ".build", "main.pdf")
+        local final_pdf = vim.fs.joinpath(draft_dir, "main.pdf")
+        local copied, err = vim.uv.fs_copyfile(built_pdf, final_pdf)
+        if not copied then
+          vim.notify("draft.nvim: could not copy PDF: " .. err, vim.log.levels.ERROR)
+        end
+      else
         vim.notify("draft.nvim: latexmk failed\n" .. (result.stderr or result.stdout), vim.log.levels.ERROR)
-        return
       end
 
-      local built_pdf = vim.fs.joinpath(draft_dir, ".build", "main.pdf")
-      local final_pdf = vim.fs.joinpath(draft_dir, "main.pdf")
-      local copied, err = vim.uv.fs_copyfile(built_pdf, final_pdf)
-      if not copied then
-        vim.notify("draft.nvim: could not copy PDF: " .. err, vim.log.levels.ERROR)
-        return
+      building = false
+      if build_pending then
+        local next_draft_dir = build_pending
+        build_pending = false
+        run_build(next_draft_dir)
       end
-      vim.notify("draft.nvim: built " .. final_pdf)
     end)
   end)
+end
 
-  vim.notify("draft.nvim: building PDF in the background")
+function M.build()
+  local draft_dir = get_draft_dir()
+  if not draft_dir then
+    return
+  end
+
+  vim.fn.mkdir(vim.fs.joinpath(draft_dir, ".build"), "p")
+  if building then
+    build_pending = draft_dir
+    return
+  end
+  run_build(draft_dir)
 end
 
 return M
