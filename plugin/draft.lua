@@ -26,3 +26,9 @@ vim.api.nvim_create_autocmd("BufWritePost", {
     end
   end,
 })
+
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  callback = function()
+    require("draft").stop_preview()
+  end,
+})

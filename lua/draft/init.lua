@@ -1,5 +1,5 @@
 local M = {}
-local preview = { pid = nil, starting = false, generation = 0, buffer = nil, timer = nil, html = nil }
+local preview = { pid = nil, starting = false, generation = 0, buffer = nil, timer = nil, html = nil, binary = nil, state = nil }
 local building = false
 local build_pending
 local close_preview, watch_preview, open_preview_window
@@ -30,6 +30,14 @@ local function get_draft_dir()
   return draft_dir
 end
 
+local function mtime(path)
+  local stat = vim.uv.fs_stat(path)
+  if not stat then
+    return 0
+  end
+  return stat.mtime.sec * 1000000000 + stat.mtime.nsec
+end
+
 function M.preview()
   local draft_dir = get_draft_dir()
   if not draft_dir then
@@ -56,17 +64,23 @@ function M.preview()
 
   vim.fn.mkdir(vim.fs.joinpath(draft_dir, ".build"), "p")
   preview.html = vim.fs.joinpath(draft_dir, ".build", "preview.html")
+  preview.state = vim.fs.joinpath(draft_dir, ".build", "preview-state.json")
+  local helper_dir = vim.fs.joinpath(vim.fn.stdpath("cache"), "draft.nvim")
+  vim.fn.mkdir(helper_dir, "p")
+  preview.binary = vim.fs.joinpath(helper_dir, "draft-preview")
   local buffer = vim.api.nvim_get_current_buf()
   watch_preview(buffer, runtime)
 
-  local binary = vim.fs.joinpath(draft_dir, ".build", "draft-preview")
-  open_preview_window(binary, preview.html, window_script)
+  open_preview_window(preview.binary, preview.html, preview.state, window_script)
 end
 
 close_preview = function()
   preview.generation = preview.generation + 1
-  if preview.pid then
-    vim.uv.kill(preview.pid, "sigterm")
+  if preview.binary and preview.state and vim.fn.executable(preview.binary) == 1 then
+    local result = vim.system({ preview.binary, "--close", preview.state }):wait()
+    if result.code ~= 0 then
+      vim.notify("draft.nvim: preview closed, but terminal geometry could not be restored", vim.log.levels.ERROR)
+    end
   end
   preview.pid, preview.starting = nil, false
   if preview.timer then
@@ -110,10 +124,10 @@ watch_preview = function(buffer, runtime)
   update()
 end
 
-open_preview_window = function(binary, html, window_script)
+open_preview_window = function(binary, html, state, window_script)
   local function open()
     local process
-    process = vim.system({ binary, html }, { detach = true }, function()
+    process = vim.system({ binary, html, state, tostring(vim.fn.getpid()) }, { detach = true }, function()
       vim.schedule(function()
         if preview.pid == process.pid then
           preview.pid = nil
@@ -122,9 +136,19 @@ open_preview_window = function(binary, html, window_script)
     end)
     preview.pid = process.pid
     vim.notify("draft.nvim: preview opened")
+    vim.defer_fn(function()
+      if vim.g.draft_accessibility_notified or vim.fn.filereadable(state) ~= 1 then
+        return
+      end
+      local ok, layout = pcall(vim.json.decode, table.concat(vim.fn.readfile(state), "\n"))
+      if ok and layout.status then
+        vim.g.draft_accessibility_notified = true
+        vim.notify("draft.nvim: " .. layout.status, vim.log.levels.WARN)
+      end
+    end, 700)
   end
 
-  if vim.fn.executable(binary) == 1 and vim.fn.getftime(binary) >= vim.fn.getftime(window_script) then
+  if vim.fn.executable(binary) == 1 and mtime(binary) >= mtime(window_script) then
     open()
     return
   end
@@ -142,7 +166,22 @@ open_preview_window = function(binary, html, window_script)
         vim.notify("draft.nvim: could not compile preview window\n" .. (result.stderr or result.stdout), vim.log.levels.ERROR)
         return
       end
-      open()
+      vim.system({
+        "codesign", "--force", "--sign", "-", "--identifier", "com.llui2.draft.nvim.preview",
+        "--options", "runtime", "--timestamp=none", binary,
+      }, { text = true }, function(signature)
+        vim.schedule(function()
+          if generation ~= preview.generation then
+            return
+          end
+          preview.starting = false
+          if signature.code ~= 0 then
+            vim.notify("draft.nvim: could not sign preview helper\n" .. (signature.stderr or signature.stdout), vim.log.levels.ERROR)
+            return
+          end
+          open()
+        end)
+      end)
     end)
   end)
 end
@@ -194,6 +233,12 @@ function M.build()
     return
   end
   run_build(draft_dir)
+end
+
+function M.stop_preview()
+  if preview.pid or preview.starting then
+    close_preview()
+  end
 end
 
 return M
