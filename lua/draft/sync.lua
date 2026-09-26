@@ -2,6 +2,21 @@ local M = { buffer = nil }
 local namespace = vim.api.nvim_create_namespace("draft.sync")
 local generation = 0
 local pending_visual
+local recent_visual
+
+vim.api.nvim_create_autocmd("ModeChanged", {
+  callback = function(event)
+    if not event.match:match("^[vV\22]:") or vim.api.nvim_get_current_buf() ~= M.buffer then return end
+    local first, last = vim.fn.getpos("'<"), vim.fn.getpos("'>")
+    if first[2] == 0 or last[2] == 0 then return end
+    recent_visual = {
+      buffer = M.buffer,
+      tick = vim.api.nvim_buf_get_changedtick(M.buffer),
+      cursor = vim.api.nvim_win_get_cursor(0),
+      range = { first[2], first[3] - 1, last[2], last[3] - 1, event.match:sub(1, 1) },
+    }
+  end,
+})
 
 vim.api.nvim_set_hl(0, "DraftSyncTarget", { default = true, bg = "#dce8f2", underline = true })
 
@@ -65,6 +80,15 @@ end
 function M.source_position_for_sync()
   if vim.fn.mode():match("^[vV\22]") and not pending_visual then
     M.capture_visual()
+  elseif not pending_visual and recent_visual then
+    local visual = recent_visual
+    recent_visual = nil
+    local buffer = M.buffer
+    local cursor = buffer and vim.fn.bufwinid(buffer) == vim.api.nvim_get_current_win() and vim.api.nvim_win_get_cursor(0)
+    if cursor and visual.buffer == buffer and visual.tick == vim.api.nvim_buf_get_changedtick(buffer)
+      and cursor[1] == visual.cursor[1] and cursor[2] == visual.cursor[2] then
+      pending_visual = visual.range
+    end
   end
   return M.source_position()
 end
@@ -83,6 +107,7 @@ function M.source_position()
   if pending_visual or (window ~= -1 and window == vim.api.nvim_get_current_win() and vim.fn.mode():match("^[vV\22]")) then
     local visual = pending_visual
     pending_visual = nil
+    recent_visual = nil
     local visual_mode = visual and visual[5] or vim.fn.mode()
     mode = visual_mode == "V" and "line" or (visual_mode:byte() == 22 and "block" or "char")
     local anchor = visual and { 0, visual[1], visual[2] + 1 } or vim.fn.getpos("v")
@@ -110,7 +135,11 @@ function M.source_position()
   return vim.json.encode({ start = first, finish = math.max(first, last), mode = mode })
 end
 
-function M.set_buffer(buffer) M.buffer = buffer end
+function M.set_buffer(buffer)
+  M.buffer = buffer
+  pending_visual = nil
+  recent_visual = nil
+end
 
 function M.jump_to_source(start_offset, end_offset, mode)
   local buffer = M.buffer
