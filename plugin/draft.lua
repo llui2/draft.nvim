@@ -6,6 +6,7 @@ vim.g.loaded_draft_nvim = true
 local commands = {
   { names = { "DraftPreview", "Dp", "Draft" }, action = "preview", desc = "Toggle the live draft preview" },
   { names = { "DraftBuild", "Db" }, action = "build", desc = "Build the draft PDF" },
+  { names = { "DraftNote" }, action = "note", desc = "Toggle a lightweight LaTeX note preview" },
 }
 
 for _, command in ipairs(commands) do

@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js"></script>
+  <link rel="stylesheet" href="katex/katex.min.css">
+  <script defer src="katex/katex.min.js"></script>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -22,6 +22,8 @@
     .display { margin: 1.3em 0; overflow-x: auto; text-align: center; }
     .error { color: #a33; white-space: pre-wrap; }
     [data-source-start] { scroll-margin-block: 42vh; }
+    ::highlight(draft-sync) { background: rgba(92, 139, 176, .18); text-decoration: underline; text-decoration-color: rgba(92, 139, 176, .5); }
+    .sync-target { background: rgba(92, 139, 176, .14); }
     @media (max-width: 600px) { body { padding: 28px 22px 60px; } }
   </style>
 </head>
@@ -29,12 +31,18 @@
   <main id="document"></main>
   <script>
     let source = "";
+    let previousBlocks = [];
+    let highlightTimer;
+    let syncRange;
     const escapeHtml = text => text.replace(/[&<>"']/g, char => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[char]);
 
-    function render() {
+    function parse() {
       const lines = source.split('\n');
+      const lineOffsets = [];
+      let total = 0;
+      for (const line of lines) { lineOffsets.push(total); total += new TextEncoder().encode(line).length + 1; }
       const blocks = [];
       let current = null;
       let inDocument = false;
@@ -50,7 +58,10 @@
         const heading = line.match(/^\s*\\(section|subsection)\{([^{}]*)\}/);
         if (heading) {
           flush();
-          blocks.push({ kind: heading[1], value: heading[2], start: index + 1, end: index + 1 });
+          const content = line.indexOf(heading[2]);
+          blocks.push({ kind: heading[1], value: heading[2], start: index + 1, end: index + 1,
+            startOffset: lineOffsets[index] + new TextEncoder().encode(line.slice(0, content)).length,
+            endOffset: lineOffsets[index] + new TextEncoder().encode(line.slice(0, content + heading[2].length)).length });
           continue;
         }
         if (/\\\[/.test(line)) {
@@ -59,63 +70,219 @@
           let end = index + 1;
           while (!/\\\]/.test(value) && end < lines.length) value += '\n' + lines[end++];
           value = value.replace(/\\\].*$/, '').trim();
-          blocks.push({ kind: 'math', value, start: index + 1, end });
+          blocks.push({ kind: 'math', value, start: index + 1, end,
+            startOffset: lineOffsets[index], endOffset: lineOffsets[Math.min(end - 1, lines.length - 1)] + new TextEncoder().encode(lines[Math.min(end - 1, lines.length - 1)]).length });
           index = end - 1;
           continue;
         }
         if (!line.trim()) { flush(); continue; }
-        if (!current) current = { kind: 'paragraph', value: line, start: index + 1, end: index + 1 };
-        else { current.value += '\n' + line; current.end = index + 1; }
+        if (!current) current = { kind: 'paragraph', value: line, parts: [{ text: line, offset: lineOffsets[index] }], start: index + 1, end: index + 1, startOffset: lineOffsets[index], endOffset: lineOffsets[index] + new TextEncoder().encode(line).length };
+        else { current.value += '\n' + line; current.parts.push({ text: line, offset: lineOffsets[index] }); current.end = index + 1; current.endOffset = lineOffsets[index] + new TextEncoder().encode(line).length; }
       }
       flush();
-      const html = blocks.map(block => {
-        const attr = `data-source-start="${block.start}" data-source-end="${block.end}"`;
-        if (block.kind === 'section') return `<h1 ${attr}>${escapeHtml(block.value)}</h1>`;
-        if (block.kind === 'subsection') return `<h2 ${attr}>${escapeHtml(block.value)}</h2>`;
-        if (block.kind === 'math') {
-          try {
-            return `<div class="display" ${attr}>${katex.renderToString(block.value, { displayMode: true, throwOnError: false, strict: "ignore" })}</div>`;
-          } catch (_) {
-            return `<div class="display error" ${attr}>${escapeHtml(block.value)}</div>`;
-          }
-        }
-        const inline = [];
-        let paragraph = block.value.replace(/\\texttt\{([^{}]*)\}/g, '$1').replace(/\$([^$\n]+)\$/g, (_, math) => {
-          inline.push(math);
-          return `@@INLINE${inline.length - 1}@@`;
-        });
-        paragraph = escapeHtml(paragraph).replace(/\\\\/g, '<br>');
-        paragraph = paragraph.replace(/@@INLINE(\d+)@@/g, (_, index) => {
-          const math = inline[Number(index)];
-          try { return katex.renderToString(math, { throwOnError: false, strict: "ignore" }); }
-          catch (_) { return `<span class="error">${escapeHtml(`$${math}$`)}</span>`; }
-        });
-        return `<p ${attr}>${paragraph}</p>`;
-      }).join('\n');
-      document.getElementById('document').innerHTML = html;
-      document.querySelectorAll('[data-source-start]').forEach(element => {
-        element.addEventListener('click', () => {
-          const start = element.dataset.sourceStart;
-          const end = element.dataset.sourceEnd;
-          window.location.href = `draft://clicked?start=${start}&end=${end}`;
-        });
-      });
+      return blocks;
     }
 
-    window.sourceToPreview = function(start, end) {
+    function renderBlock(block) {
+      const attr = `data-source-start="${block.start}" data-source-end="${block.end}" data-map-start="${block.startOffset}" data-map-end="${block.endOffset}"`;
+      const mapped = (text, offset) => text
+        ? `<span data-map-start="${offset}" data-map-end="${offset + new TextEncoder().encode(text).length}">${escapeHtml(text)}</span>`
+        : '';
+      if (block.kind === 'section') return `<h1 ${attr}>${mapped(block.value, block.startOffset)}</h1>`;
+      if (block.kind === 'subsection') return `<h2 ${attr}>${mapped(block.value, block.startOffset)}</h2>`;
+      if (block.kind === 'math') {
+        try {
+          return `<div class="display" ${attr}>${katex.renderToString(block.value, { displayMode: true, throwOnError: false, strict: "ignore" })}</div>`;
+        } catch (_) {
+          return `<div class="display error" ${attr}>${escapeHtml(block.value)}</div>`;
+        }
+      }
+      const body = block.parts.map(part => {
+        const token = /\$([^$\n]+)\$|\\texttt\{([^{}]*)\}|\\\\/g;
+        let out = '', cursor = 0, match;
+        while ((match = token.exec(part.text))) {
+          out += mapped(part.text.slice(cursor, match.index), part.offset + new TextEncoder().encode(part.text.slice(0, cursor)).length);
+          if (match[1] !== undefined) {
+            const start = part.offset + new TextEncoder().encode(part.text.slice(0, match.index)).length;
+            const end = part.offset + new TextEncoder().encode(part.text.slice(0, token.lastIndex)).length;
+            try { out += `<span data-map-start="${start}" data-map-end="${end}" data-math="true">${katex.renderToString(match[1], { throwOnError: false, strict: "ignore" })}</span>`; }
+            catch (_) { out += mapped(match[0], start); }
+          } else {
+            if (match[2] === undefined) out += '<br>';
+            else {
+              const textStart = match.index + match[0].indexOf(match[2]);
+              out += mapped(match[2], part.offset + new TextEncoder().encode(part.text.slice(0, textStart)).length);
+            }
+          }
+          cursor = token.lastIndex;
+        }
+        out += mapped(part.text.slice(cursor), part.offset + new TextEncoder().encode(part.text.slice(0, cursor)).length);
+        return out;
+      }).join('<br>');
+      return `<p ${attr}>${body}</p>`;
+    }
+
+    function render() {
+      const root = document.getElementById('document');
+      const oldNodes = new Map();
+      for (const block of previousBlocks) {
+        const key = `${block.kind}\0${block.value}`;
+        const nodes = oldNodes.get(key) || [];
+        nodes.push(block.element);
+        oldNodes.set(key, nodes);
+      }
+      const blocks = parse();
+      let cursor = root.firstChild;
+      for (const block of blocks) {
+        const key = `${block.kind}\0${block.value}`;
+        const reusable = oldNodes.get(key);
+        let element = reusable && reusable.length ? reusable.shift() : null;
+        if (!element) {
+          const template = document.createElement('template');
+          template.innerHTML = renderBlock(block);
+          element = template.content.firstElementChild;
+        } else {
+          const offsetShift = block.startOffset - Number(element.dataset.mapStart);
+          if (offsetShift !== 0) {
+            element.querySelectorAll('[data-map-start], [data-map-end]').forEach(mapped => {
+              if (mapped.dataset.mapStart !== undefined) mapped.dataset.mapStart = Number(mapped.dataset.mapStart) + offsetShift;
+              if (mapped.dataset.mapEnd !== undefined) mapped.dataset.mapEnd = Number(mapped.dataset.mapEnd) + offsetShift;
+            });
+          }
+        }
+        element.dataset.sourceStart = block.start;
+        element.dataset.sourceEnd = block.end;
+        element.dataset.mapStart = block.startOffset;
+        element.dataset.mapEnd = block.endOffset;
+        block.element = element;
+        if (element !== cursor) root.insertBefore(element, cursor);
+        cursor = element.nextSibling;
+      }
+      while (cursor) {
+        const next = cursor.nextSibling;
+        root.removeChild(cursor);
+        cursor = next;
+      }
+      previousBlocks = blocks;
+    }
+
+    function clearSync() {
+      if (window.CSS && CSS.highlights) CSS.highlights.delete('draft-sync');
+      const selection = window.getSelection();
+      if (syncRange && selection.rangeCount && selection.getRangeAt(0) === syncRange) selection.removeAllRanges();
+      document.querySelectorAll('.sync-target').forEach(element => element.classList.remove('sync-target'));
+      syncRange = null;
+    }
+
+    function highlight(range, fallback) {
+      clearTimeout(highlightTimer);
+      clearSync();
+      if (range) {
+        syncRange = range;
+        if (window.CSS && CSS.highlights && window.Highlight) CSS.highlights.set('draft-sync', new Highlight(range));
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      } else if (fallback) fallback.classList.add('sync-target');
+      highlightTimer = setTimeout(clearSync, 1800);
+    }
+
+    function utf16AtByte(text, byteOffset) {
+      let bytes = 0;
+      for (let i = 0; i < text.length;) {
+        const cp = text.codePointAt(i), chars = cp > 0xffff ? 2 : 1;
+        const size = new TextEncoder().encode(String.fromCodePoint(cp)).length;
+        if (bytes + size > byteOffset) return i;
+        bytes += size; i += chars;
+      }
+      return text.length;
+    }
+
+    function pointAt(offset, endPoint = false) {
+      const contains = el => endPoint
+        ? Number(el.dataset.mapStart) < offset && offset <= Number(el.dataset.mapEnd)
+        : Number(el.dataset.mapStart) <= offset && offset < Number(el.dataset.mapEnd);
+      const spans = [...document.querySelectorAll('span[data-map-start][data-map-end]')].filter(el => !el.dataset.math);
+      const span = spans.find(contains);
+      if (!span) {
+        const math = [...document.querySelectorAll('[data-math="true"]')].find(contains);
+        if (!math || !math.parentNode) return null;
+        const index = [...math.parentNode.childNodes].indexOf(math);
+        return [math.parentNode, index + (endPoint ? 1 : 0)];
+      }
+      const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
+      let node, left = offset - Number(span.dataset.mapStart);
+      while ((node = walker.nextNode())) {
+        const length = new TextEncoder().encode(node.nodeValue).length;
+        if (left <= length) return [node, utf16AtByte(node.nodeValue, left)];
+        left -= length;
+      }
+      return null;
+    }
+
+    function rangeFor(start, end) {
+      const a = pointAt(start), b = pointAt(end, true);
+      if (!a || !b) return null;
+      const range = document.createRange();
+      range.setStart(a[0], a[1]); range.setEnd(b[0], b[1]);
+      return range;
+    }
+
+    window.sourceToPreview = function(start, end, mode) {
       const blocks = [...document.querySelectorAll('[data-source-start]')];
       if (!blocks.length) return;
-      const block = blocks.find(element => Number(element.dataset.sourceStart) <= end && Number(element.dataset.sourceEnd) >= start)
-        || blocks.reduce((nearest, element) => Math.abs(Number(element.dataset.sourceStart) - start) < Math.abs(Number(nearest.dataset.sourceStart) - start) ? element : nearest, blocks[0]);
+      let block = blocks.find(el => Number(el.dataset.mapStart) <= start && Number(el.dataset.mapEnd) >= start);
+      if (!block) block = blocks.reduce((nearest, el) => Math.abs(Number(el.dataset.mapStart) - start) < Math.abs(Number(nearest.dataset.mapStart) - start) ? el : nearest, blocks[0]);
       block.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (mode === 'cursor') {
+        const math = [...block.querySelectorAll('[data-math="true"]')].find(el => Number(el.dataset.mapStart) <= start && Number(el.dataset.mapEnd) >= start);
+        if (math) { highlight(null, math); return; }
+      }
+      if (block.classList.contains('display')) { highlight(null, block); return; }
+      const range = rangeFor(start, end);
+      if (range) highlight(range, block); else highlight(null, block);
     };
 
+    function sendPreviewRange(start, end, mode = 'char') {
+      window.location.href = `draft://clicked?start=${start}&end=${end}&mode=${mode}`;
+    };
+
+    document.getElementById('document').addEventListener('mousedown', () => {
+      clearTimeout(highlightTimer);
+      if (window.CSS && CSS.highlights) CSS.highlights.delete('draft-sync');
+      syncRange = null;
+    });
+
+    document.getElementById('document').addEventListener('mouseup', event => {
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed && document.getElementById('document').contains(selection.anchorNode)) {
+        const range = selection.getRangeAt(0);
+        const startSpan = range.startContainer.parentElement?.closest('[data-map-start][data-map-end]');
+        const endSpan = range.endContainer.parentElement?.closest('[data-map-start][data-map-end]');
+        if (startSpan && endSpan && !startSpan.closest('.display') && !endSpan.closest('.display')) {
+          const toByte = (span, node, offset) => {
+            if (span.dataset.math) return Number(span.dataset.mapStart);
+            const before = [...span.childNodes].reduce((n, child) => child === node ? n : n + child.textContent.length, 0) + offset;
+            return Number(span.dataset.mapStart) + new TextEncoder().encode((span.textContent || '').slice(0, before)).length;
+          };
+          const toEndByte = (span, node, offset) => span.dataset.math ? Number(span.dataset.mapEnd) : toByte(span, node, offset);
+          const a = toByte(startSpan, range.startContainer, range.startOffset);
+          const b = toEndByte(endSpan, range.endContainer, range.endOffset);
+          sendPreviewRange(Math.min(a, b), Math.max(a, b));
+          return;
+        }
+      }
+      const element = event.target.closest('[data-map-start][data-map-end]');
+      if (element) {
+        const display = element.closest('.display');
+        const target = display || element;
+        sendPreviewRange(target.dataset.mapStart, target.dataset.mapEnd, display ? 'line' : 'char');
+      }
+    });
+
     window.updateSource = function(nextSource) {
-      const x = window.scrollX;
-      const y = window.scrollY;
       source = nextSource;
       render();
-      requestAnimationFrame(() => window.scrollTo(x, y));
     };
 
     window.addEventListener('load', render);

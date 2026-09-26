@@ -1,48 +1,18 @@
-# draft.nvim
+# Draft
 
-A minimal Neovim writing setup for standard LaTeX manuscripts in a research
-project's `draft/` directory.
+Draft makes Neovim comfortable for scientific writing. Neovim remains the
+editor; Draft supplies a fast rendered companion for LaTeX manuscripts and
+lightweight `.tex` notes.
 
-## Commands
+Install this repository with your Neovim plugin manager. On macOS, the preview
+requires Swift. For the paired terminal layout, grant Accessibility access.
+Manuscript PDF builds also require `latexmk` and a LaTeX installation.
 
-- `:DraftPreview`, `:Dp`, or `:Draft` toggles a native macOS window
-  for the open `draft/main.tex`. With Accessibility access, it arranges the
-  terminal and titled “Draft” window across the screen's usable area: terminal
-  on the left 55% and Draft on the right 45%. Drag either side of the
-  shared divider to resize the split. Closing Draft with `:Dp` or its close
-  button restores the terminal's original position and size. Draft remains a
-  standard macOS window with normal resizing and minimizing behavior. A small
-  native arrow control on the divider navigates between the source location
-  and its rendered paragraph or equation.
-- `:DraftBuild` or `:Db` builds `draft/main.tex` in the background.
+Open `project/draft/main.tex` and run `:Dp` for the live preview. Save to build
+`draft/main.pdf`, or use `:Db`. For a standalone `.tex` fragment with no
+preamble or PDF build, run `:DraftNote`.
 
-The preview updates while typing and supports paragraphs, `\section{}`,
-`\subsection{}`, inline `$...$`, and display `\[...\]` math. KaTeX is loaded
-from jsDelivr, so the first preview requires an internet connection. The
-preview is intentionally not a full LaTeX renderer.
+The live preview uses bundled offline KaTeX and supports common headings,
+prose, and math. The manuscript PDF remains the final rendering.
 
-Saving `draft/main.tex` starts a background PDF build. Builds are serialized;
-after a successful build the PDF is copied to `draft/main.pdf`, while auxiliary
-files stay in `draft/.build/`. Project detection walks upward from the current
-file or working directory looking for `draft/main.tex`.
-
-## Try it
-
-Install `draft.nvim` through your usual Neovim plugin manager, then open the
-manuscript in your normal Neovim session. The plugin uses that session and its
-existing configuration; it does not start a separate Neovim instance.
-
-On macOS, Swift, `latexmk`, and a LaTeX installation must also be available.
-Accessibility permission is required to identify, resize, and observe the
-terminal for split mode. Without it, Draft warns and opens as a separate normal
-window without changing the terminal.
-
-```sh
-nvim project/draft/main.tex
-```
-
-Run `:Dp` to open the preview, type to update it, and save to build the PDF.
-
-`draft.nvim` is a Neovim plugin; regular Vim does not load Neovim's
-`init.lua` or plugins. On systems where `vim` is regular Vim, use `nvim` as
-shown above.
+See `:help draft` for commands, prose movement, and navigation.

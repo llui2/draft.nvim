@@ -1,0 +1,41 @@
+*draft* Draft: a rendered companion for Neovim
+
+Draft keeps Neovim as the editor. It previews LaTeX source in a macOS WebView.
+The live preview covers common prose, headings, and inline/display math; the
+built PDF is authoritative for manuscripts.
+
+*draft-commands*
+
+:Dp  :DraftPreview  :Draft   Toggle the manuscript preview for draft/main.tex.
+:Db  :DraftBuild            Build draft/main.tex with latexmk.
+:DraftNote                 Toggle a lightweight .tex fragment preview.
+
+*draft-preview*
+
+Open project/draft/main.tex and run :Dp. Draft uses a 55/45 terminal/preview
+layout when Accessibility can identify and resize the current terminal window.
+Dragging the shared divider changes the split. Closing the preview restores
+its prior terminal geometry. The preview updates while editing. Saving
+main.tex starts a background PDF build into draft/main.pdf.
+
+*draft-prose*
+
+A buffer explicitly previewed by Draft uses wrap, linebreak, breakindent and
+textwidth=0. In Normal mode, j/k follow visual lines without a count; 5j/5k
+retain logical-line motion. Existing user mappings for j/k take precedence.
+Other buffers are unaffected.
+
+*draft-notes*
+
+Open a .tex note and run :DraftNote. Write ordinary LaTeX such as \section{},
+$...$ and \[...\] without a document preamble or PDF build. This is a fast
+preview of a LaTeX subset, not a TeX engine.
+
+*draft-navigation*
+
+The two arrow buttons on the shared divider transfer the current source
+selection to the preview or the preview selection to Neovim. Clicking rendered
+content also navigates to its source range. Display equations use equation-level
+correspondence.
+
+vim:tw=78:ts=8:noet:ft=help:

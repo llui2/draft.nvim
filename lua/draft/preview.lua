@@ -9,11 +9,9 @@ local function mtime(path)
 end
 
 local function helper_alive(pid)
-  if not pid or not pcall(vim.uv.kill, pid, 0) then
-    return false
-  end
-  local result = vim.system({ "ps", "-p", tostring(pid), "-o", "comm=" }, { text = true }):wait()
-  return result.code == 0 and vim.fs.basename(vim.trim(result.stdout or "")) == "draft-preview"
+  if not pid then return false end
+  local ok, result = pcall(vim.uv.kill, pid, 0)
+  return ok and result ~= nil
 end
 
 local function read_state(path)
@@ -33,6 +31,17 @@ local function cleanup_watch()
   if preview.group then
     pcall(vim.api.nvim_del_augroup_by_id, preview.group)
     preview.group = nil
+  end
+end
+
+local function cleanup_startup_watch()
+  for _, key in ipairs({ "startup_event", "startup_timeout" }) do
+    local handle = preview[key]
+    if handle then
+      if key == "startup_event" then pcall(handle.stop, handle) end
+      pcall(handle.close, handle)
+      preview[key] = nil
+    end
   end
 end
 
@@ -116,13 +125,24 @@ local function wait_for_external_close(pid, deadline)
   end, 50)
 end
 
-function M.toggle()
-  if preview.starting or (preview.pid and helper_alive(preview.pid)) then
+function M.toggle(note)
+  if preview.starting then
     close_preview()
+    return
+  end
+  if preview.pid and helper_alive(preview.pid) then
+    if preview.hidden then
+      preview.hidden = false
+      write_source(table.concat(vim.api.nvim_buf_get_lines(preview.buffer, 0, -1, false), "\n"))
+      pcall(vim.uv.kill, preview.pid, "sigusr2")
+    else
+      close_preview()
+    end
     return
   end
   if preview.pid then
     preview.pid = nil
+    preview.hidden = false
     cleanup_watch()
   end
   if preview.closing_pid then
@@ -134,14 +154,20 @@ function M.toggle()
     preview.reopen_after_close = false
   end
 
-  local draft_dir = project.draft_dir()
-  if not draft_dir then
-    return
-  end
   local source_name = vim.api.nvim_buf_get_name(0)
-  if vim.fs.basename(source_name) ~= "main.tex" or vim.fs.dirname(source_name) ~= draft_dir then
-    vim.notify("draft.nvim: open draft/main.tex to preview it", vim.log.levels.ERROR)
-    return
+  local draft_dir
+  if note then
+    if source_name == "" or not source_name:match("%.tex$") then
+      vim.notify("draft.nvim: open a .tex note first", vim.log.levels.ERROR)
+      return
+    end
+  else
+    draft_dir = project.draft_dir()
+    if not draft_dir then return end
+    if vim.fs.basename(source_name) ~= "main.tex" or vim.fs.dirname(source_name) ~= draft_dir then
+      vim.notify("draft.nvim: open draft/main.tex to preview it", vim.log.levels.ERROR)
+      return
+    end
   end
 
   local runtime = vim.api.nvim_get_runtime_file("lua/draft/preview.html", false)[1]
@@ -151,12 +177,13 @@ function M.toggle()
     return
   end
 
-  vim.fn.mkdir(vim.fs.joinpath(draft_dir, ".build"), "p")
-  preview.html = vim.fs.joinpath(draft_dir, ".build", "preview.html")
+  local state_dir = note and vim.fs.joinpath(vim.fn.stdpath("cache"), "draft.nvim")
+    or vim.fs.joinpath(draft_dir, ".build")
+  vim.fn.mkdir(state_dir, "p")
   local session = tostring(vim.fn.getpid())
-  preview.source = vim.fs.joinpath(draft_dir, ".build", "preview-source-" .. session .. ".json")
-  preview.state = vim.fs.joinpath(draft_dir, ".build", "preview-state-" .. session .. ".json")
-  preview.clicked = vim.fs.joinpath(draft_dir, ".build", "preview-click-" .. session .. ".json")
+  preview.source = vim.fs.joinpath(state_dir, "preview-source-" .. session .. ".json")
+  preview.state = vim.fs.joinpath(state_dir, "preview-state-" .. session .. ".json")
+  preview.clicked = vim.fs.joinpath(state_dir, "preview-click-" .. session .. ".json")
   preview.server = vim.v.servername ~= "" and vim.v.servername or vim.fn.serverstart()
   require("draft.sync").set_buffer(vim.api.nvim_get_current_buf())
 
@@ -171,11 +198,10 @@ function M.toggle()
   end
   cleanup_state(preview.state, preview.source, preview.clicked)
 
-  local copied, err = vim.uv.fs_copyfile(runtime, preview.html)
-  if not copied then
-    vim.notify("draft.nvim: could not prepare preview page: " .. err, vim.log.levels.ERROR)
-    return
-  end
+  preview.hidden = false
+  preview.html = runtime
+  preview.buffer = vim.api.nvim_get_current_buf()
+  require("draft.prose").enable(preview.buffer)
   if not watch_preview(vim.api.nvim_get_current_buf()) then
     cleanup_watch()
     cleanup_state(preview.state, preview.source, preview.clicked)
@@ -187,17 +213,26 @@ function M.toggle()
 end
 
 close_preview = function()
-  preview.generation = preview.generation + 1
+  if preview.starting then
+    preview.generation = preview.generation + 1
+    if preview.pid then pcall(vim.uv.kill, preview.pid, "sigterm") end
+    preview.pid, preview.starting, preview.hidden = nil, false, false
+    cleanup_startup_watch()
+    cleanup_watch()
+    cleanup_state(preview.state, preview.source, preview.clicked)
+    vim.notify("draft.nvim: preview closed")
+    return
+  end
   local pid = preview.pid
   if pid and helper_alive(pid) then
-    preview.closing_pid = pid
-    pcall(vim.uv.kill, pid, "sigterm")
+    preview.hidden = true
+    pcall(vim.uv.kill, pid, "sigusr1")
   elseif not pid then
     cleanup_state(preview.state, preview.source, preview.clicked)
   end
-  preview.pid, preview.starting = nil, false
-  cleanup_watch()
-  vim.notify("draft.nvim: preview closed")
+  preview.starting = false
+  if not pid then cleanup_watch() end
+  vim.notify("draft.nvim: preview hidden")
 end
 
 open_preview_window = function(binary, html, source, state, clicked, server, nvim, window_script)
@@ -239,7 +274,7 @@ open_preview_window = function(binary, html, source, state, clicked, server, nvi
       end)
     end)
     preview.pid = process.pid
-    preview.starting = false
+    preview.starting = true
     local deadline = vim.uv.hrtime() + 5000000000
     local function check_startup()
       if preview.pid ~= process.pid or notified then
@@ -248,6 +283,8 @@ open_preview_window = function(binary, html, source, state, clicked, server, nvi
       local helper_state = read_state(state)
       if helper_state and tonumber(helper_state.pid) == process.pid then
         if helper_state.status == "visible" then
+          cleanup_startup_watch()
+          preview.starting = false
           notified = true
           opened = true
           if helper_state.warning then
@@ -257,23 +294,36 @@ open_preview_window = function(binary, html, source, state, clicked, server, nvi
           end
           return
         elseif helper_state.status == "failed" then
+          cleanup_startup_watch()
           fail(helper_state.error or "the helper could not show its window")
           return
         end
       end
       if not helper_alive(process.pid) then
+        cleanup_startup_watch()
         fail("helper process exited before the Draft window became visible")
         return
       end
       if vim.uv.hrtime() >= deadline then
+        cleanup_startup_watch()
         preview.closing_pid = process.pid
         pcall(vim.uv.kill, process.pid, "sigterm")
         fail("timed out waiting for the Draft window to become visible")
         return
       end
-      vim.defer_fn(check_startup, 100)
     end
-    vim.defer_fn(check_startup, 50)
+    preview.startup_event = vim.uv.new_fs_event()
+    preview.startup_event:start(vim.fs.dirname(state), {}, vim.schedule_wrap(check_startup))
+    preview.startup_timeout = vim.uv.new_timer()
+    preview.startup_timeout:start(5000, 0, vim.schedule_wrap(function()
+      check_startup()
+      if preview.starting and preview.pid == process.pid then
+        preview.closing_pid = process.pid
+        pcall(vim.uv.kill, process.pid, "sigterm")
+        fail("timed out waiting for the Draft window to become visible")
+      end
+    end))
+    vim.schedule(check_startup)
   end
 
   if vim.fn.executable(binary) == 1 and mtime(binary) >= mtime(window_script) then
@@ -284,7 +334,7 @@ open_preview_window = function(binary, html, source, state, clicked, server, nvi
   preview.starting = true
   preview.generation = preview.generation + 1
   local generation = preview.generation
-  vim.system({ "swiftc", "-O", window_script, "-o", binary }, { text = true }, function(result)
+  vim.system({ "swiftc", "-Onone", window_script, "-o", binary }, { text = true }, function(result)
     vim.schedule(function()
       if generation ~= preview.generation then
         return
@@ -319,9 +369,11 @@ open_preview_window = function(binary, html, source, state, clicked, server, nvi
 end
 
 function M.stop()
-  if preview.pid or preview.starting then
-    close_preview()
-  end
+  preview.generation = preview.generation + 1
+  cleanup_startup_watch()
+  if preview.pid then pcall(vim.uv.kill, preview.pid, "sigterm") end
+  preview.pid, preview.starting, preview.hidden = nil, false, false
+  cleanup_watch()
 end
 
 return M
