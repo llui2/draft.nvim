@@ -440,7 +440,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
             if url.host == "jump", let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
                let start = components.queryItems?.first(where: { $0.name == "start" })?.value.flatMap(Int.init),
                let end = components.queryItems?.first(where: { $0.name == "end" })?.value.flatMap(Int.init) {
-                syncToSource(start: start, end: end, mode: "cursor")
+                syncToSource(start: start, end: end, mode: "char")
                 decisionHandler(.cancel)
                 return
             }

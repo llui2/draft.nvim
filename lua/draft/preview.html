@@ -12,8 +12,8 @@
       --background: #fff;
       --foreground: #252525;
       --error: #a33;
-      --warning-dot: #b77a0b;
-      --error-dot: #d64b47;
+      --warning-dot: #ffbd2e;
+      --error-dot: #ff5f57;
       --sync-fill: rgba(92, 139, 176, .18);
       --sync-line: rgba(92, 139, 176, .5);
     }
@@ -22,8 +22,8 @@
       --background: #1c1c1e;
       --foreground: #e5e5e7;
       --error: #ff9b96;
-      --warning-dot: #f0bd54;
-      --error-dot: #ff6965;
+      --warning-dot: #ffbd2e;
+      --error-dot: #ff5f57;
       --sync-fill: rgba(130, 178, 220, .24);
       --sync-line: rgba(130, 178, 220, .65);
     }
@@ -44,7 +44,7 @@
     .display { margin: 1.3em 0; overflow-x: auto; text-align: center; }
     .error { color: var(--error); white-space: pre-wrap; }
     #problems { position: fixed; top: 34px; right: 14px; z-index: 10; font: 12px/1.35 -apple-system, BlinkMacSystemFont, sans-serif; }
-    #problem-dot { width: 12px; height: 12px; padding: 0; border: 1px solid rgba(0,0,0,.16); border-radius: 50%; background: var(--warning-dot); cursor: pointer; }
+    #problem-dot { width: 12px; height: 12px; padding: 0; border: 0; border-radius: 50%; background: var(--warning-dot); cursor: pointer; }
     #problems.error #problem-dot { background: var(--error-dot); }
     #problem-detail { display: none; position: absolute; right: 0; top: 18px; min-width: 190px; max-width: 300px; padding: 8px 10px; border: 1px solid rgba(128,128,128,.28); border-radius: 7px; background: var(--background); color: var(--foreground); box-shadow: 0 3px 14px rgba(0,0,0,.12); }
     #problems:hover #problem-detail, #problems:focus-within #problem-detail, #problems.open #problem-detail { display: block; }
@@ -213,7 +213,14 @@
         nodes.push(block);
         oldNodes.set(key, nodes);
       }
-      const blocks = parse();
+      let blocks;
+      try { blocks = parse(); }
+      catch (_) {
+        previousBlocks = [];
+        root.textContent = source;
+        updateProblems([problem('error', 'Preview could not parse this source', 0, byteLength(source))]);
+        return;
+      }
       let cursor = root.firstChild;
       for (const block of blocks) {
         if (block.kind === 'paragraph') block.parts.forEach(part => proseWarnings(part, items));
