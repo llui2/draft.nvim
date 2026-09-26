@@ -214,7 +214,7 @@ final class PreviewSession: NSObject, NSWindowDelegate {
         }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .defaultMode)
         let visible = target.screen.visibleFrame
-        splitX = visible.minX + visible.width * (2.0 / 3.0)
+        splitX = visible.minX + visible.width * 0.55
         let initial = frames(at: splitX, in: visible)
         guard apply(initial.terminal, initial.preview),
               let arranged = terminalFrame(pid: target.app.processIdentifier, window: target.axWindow),

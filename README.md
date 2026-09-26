@@ -8,7 +8,7 @@ project's `draft/` directory.
 - `:DraftPreview`, `:Dp`, or `:Draft` toggles a native macOS window
   for the open `draft/main.tex`. With Accessibility access, it arranges the
   terminal and titled “Draft” window across the screen's usable area: terminal
-  on the left two-thirds and Draft on the right third. Drag either side of the
+  on the left 55% and Draft on the right 45%. Drag either side of the
   shared divider to resize the split. Closing Draft with `:Dp` or its close
   button restores the terminal's original position and size. Draft remains a
   standard macOS window with normal resizing and minimizing behavior.
@@ -26,13 +26,17 @@ file or working directory looking for `draft/main.tex`.
 
 ## Try it
 
-On macOS, with Neovim, Swift, `latexmk`, and a LaTeX installation available.
+Install `draft.nvim` through your usual Neovim plugin manager, then open the
+manuscript in your normal Neovim session. The plugin uses that session and its
+existing configuration; it does not start a separate Neovim instance.
+
+On macOS, Swift, `latexmk`, and a LaTeX installation must also be available.
 Accessibility permission is required to identify, resize, and observe the
 terminal for split mode. Without it, Draft warns and opens as a separate normal
 window without changing the terminal.
 
 ```sh
-nvim --cmd "set runtimepath^=$(pwd)" example/draft/main.tex
+nvim path/to/project/draft/main.tex
 ```
 
 Run `:Dp` to open the preview, type to update it, and save to build the PDF.
