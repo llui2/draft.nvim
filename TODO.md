@@ -137,6 +137,8 @@ The example manuscript and Neovim help describe the current keyboard workflow. C
 
 The native titlebar has no visible title and blends with the rendered surface. Its moon/sun control switches between light and dark appearances and remembers an explicit choice across sessions.
 
+A minimal problem dot appears only when the preview finds a problem; clean documents show no diagnostic chrome. Unsupported preview commands are warnings, with exact source offsets and a compact detail surface. Actual TeX/LSP errors remain future Neovim/Texlab integration.
+
 
 Current problems
 
@@ -157,7 +159,7 @@ Near-term work
 
 Run live GUI checks for source and preview selection sync, exact paired-window focus, the divider, close/reopen and restored terminal geometry. Repeat Terminal/Safari/Terminal and Terminal A/B/A Cmd-Tab checks before claiming reliable coupling. Verify Unicode and equation mapping in the rendered view. Keep the example and help aligned with behavior confirmed on the real machine.
 
-After interaction is solid, consider Texlab diagnostics through Neovim LSP and only a minimal conditional status surface in Draft.
+After interaction is solid, consider Texlab diagnostics through Neovim LSP using the existing conditional problem surface.
 
 
 Later ideas

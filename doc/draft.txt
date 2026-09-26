@@ -19,6 +19,11 @@ its prior terminal geometry. The preview updates while editing. Saving
 main.tex starts a background PDF build into draft/main.pdf.
 The native moon/sun titlebar control switches the rendered surface between
 light and dark appearances. Draft remembers the choice across sessions.
+No problem dot means the fast preview is healthy. A yellow dot means Draft
+encountered unsupported or questionable preview syntax; this need not mean
+invalid LaTeX. A red dot means a rendering failure. Hover or click the dot
+for details, then click a problem to jump to its source. Future TeX/LSP
+diagnostics may use this surface; they are not currently supplied.
 
 *draft-prose*
 

@@ -358,9 +358,10 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         window.appearance = NSAppearance(named: darkAppearance ? .darkAqua : .aqua)
         window.backgroundColor = background
         webView.underPageBackgroundColor = background
-        let symbol = darkAppearance ? "sun.max" : "moon"
+        let symbol = darkAppearance ? "sun.max.fill" : "moon.fill"
         let label = darkAppearance ? "Use light appearance" : "Use dark appearance"
         appearanceButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        appearanceButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
         appearanceButton.setAccessibilityLabel(label)
         if pageLoaded { webView.evaluateJavaScript("window.setDraftAppearance('\(darkAppearance ? "dark" : "light")')") }
     }
@@ -436,6 +437,13 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         if let url = navigationAction.request.url, url.scheme == "draft" {
             if url.host == "sync" { navigateToPreview(); decisionHandler(.cancel); return }
             if url.host == "focus-source" { focusSource(); decisionHandler(.cancel); return }
+            if url.host == "jump", let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+               let start = components.queryItems?.first(where: { $0.name == "start" })?.value.flatMap(Int.init),
+               let end = components.queryItems?.first(where: { $0.name == "end" })?.value.flatMap(Int.init) {
+                syncToSource(start: start, end: end, mode: "cursor")
+                decisionHandler(.cancel)
+                return
+            }
         }
         decisionHandler(.allow)
     }

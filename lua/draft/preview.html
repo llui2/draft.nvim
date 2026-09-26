@@ -12,6 +12,8 @@
       --background: #fff;
       --foreground: #252525;
       --error: #a33;
+      --warning-dot: #b77a0b;
+      --error-dot: #d64b47;
       --sync-fill: rgba(92, 139, 176, .18);
       --sync-line: rgba(92, 139, 176, .5);
     }
@@ -20,6 +22,8 @@
       --background: #1c1c1e;
       --foreground: #e5e5e7;
       --error: #ff9b96;
+      --warning-dot: #f0bd54;
+      --error-dot: #ff6965;
       --sync-fill: rgba(130, 178, 220, .24);
       --sync-line: rgba(130, 178, 220, .65);
     }
@@ -39,6 +43,12 @@
     .texttt { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: .9em; }
     .display { margin: 1.3em 0; overflow-x: auto; text-align: center; }
     .error { color: var(--error); white-space: pre-wrap; }
+    #problems { position: fixed; top: 34px; right: 14px; z-index: 10; font: 12px/1.35 -apple-system, BlinkMacSystemFont, sans-serif; }
+    #problem-dot { width: 12px; height: 12px; padding: 0; border: 1px solid rgba(0,0,0,.16); border-radius: 50%; background: var(--warning-dot); cursor: pointer; }
+    #problems.error #problem-dot { background: var(--error-dot); }
+    #problem-detail { display: none; position: absolute; right: 0; top: 18px; min-width: 190px; max-width: 300px; padding: 8px 10px; border: 1px solid rgba(128,128,128,.28); border-radius: 7px; background: var(--background); color: var(--foreground); box-shadow: 0 3px 14px rgba(0,0,0,.12); }
+    #problems:hover #problem-detail, #problems:focus-within #problem-detail, #problems.open #problem-detail { display: block; }
+    #problem-detail button { display: block; width: 100%; padding: 3px 0; border: 0; background: none; color: inherit; text-align: left; font: inherit; cursor: pointer; }
     [data-source-start] { scroll-margin-block: 42vh; }
     ::highlight(draft-sync) { background: var(--sync-fill); text-decoration: underline; text-decoration-color: var(--sync-line); }
     .sync-target { background: var(--sync-fill); }
@@ -46,6 +56,7 @@
   </style>
 </head>
 <body>
+  <div id="problems" hidden><button id="problem-dot" type="button" aria-label="Preview problems" aria-expanded="false"></button><div id="problem-detail"></div></div>
   <main id="document"></main>
   <script>
     let source = "";
@@ -58,6 +69,54 @@
     const escapeHtml = text => text.replace(/[&<>"']/g, char => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[char]);
+    const byteLength = text => new TextEncoder().encode(text).length;
+    const problem = (severity, message, startOffset, endOffset) => ({ severity, source: 'preview', message, startOffset, endOffset });
+    function updateProblems(items) {
+      const surface = document.getElementById('problems');
+      const detail = document.getElementById('problem-detail');
+      const dot = document.getElementById('problem-dot');
+      surface.hidden = items.length === 0;
+      surface.classList.toggle('error', items.some(item => item.severity === 'error'));
+      surface.classList.remove('open');
+      dot.setAttribute('aria-expanded', 'false');
+      dot.setAttribute('aria-label', items.length ? `${items.length} preview ${items.length === 1 ? 'problem' : 'problems'}` : 'Preview problems');
+      detail.replaceChildren();
+      if (items.length > 1) {
+        const summary = document.createElement('div');
+        const errors = items.filter(item => item.severity === 'error').length;
+        const warnings = items.length - errors;
+        summary.textContent = [errors && `${errors} preview ${errors === 1 ? 'error' : 'errors'}`, warnings && `${warnings} preview ${warnings === 1 ? 'warning' : 'warnings'}`].filter(Boolean).join(' · ');
+        detail.append(summary);
+      }
+      for (const item of items.slice(0, 5)) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.textContent = item.message;
+        row.addEventListener('click', () => { window.location.href = `draft://jump?start=${item.startOffset}&end=${item.endOffset}`; });
+        detail.append(row);
+      }
+    }
+    document.getElementById('problem-dot').addEventListener('click', () => {
+      const surface = document.getElementById('problems');
+      surface.classList.toggle('open');
+      document.getElementById('problem-dot').setAttribute('aria-expanded', String(surface.classList.contains('open')));
+    });
+    function proseWarnings(part, items) {
+      const text = part.text;
+      const skip = /\$[^$\n]+\$|\\texttt\{[^{}]*\}|\\\\/gy;
+      for (let i = 0; i < text.length;) {
+        skip.lastIndex = i;
+        const known = skip.exec(text);
+        if (known) { i = skip.lastIndex; continue; }
+        if (text[i] === '\\' && /[A-Za-z@]/.test(text[i + 1] || '')) {
+          const match = /^\\[A-Za-z@]+\*?/.exec(text.slice(i));
+          const command = match[0];
+          const start = part.offset + byteLength(text.slice(0, i));
+          items.push(problem('warning', `Unsupported preview command ${command}`, start, start + byteLength(command)));
+          i += command.length;
+        } else i++;
+      }
+    }
 
     function parse() {
       const lines = source.split('\n');
@@ -104,7 +163,7 @@
       return blocks;
     }
 
-    function renderBlock(block) {
+    function renderBlock(block, items) {
       const attr = `data-source-start="${block.start}" data-source-end="${block.end}" data-map-start="${block.startOffset}" data-map-end="${block.endOffset}"`;
       const mapped = (text, offset) => text
         ? `<span data-map-start="${offset}" data-map-end="${offset + new TextEncoder().encode(text).length}">${escapeHtml(text)}</span>`
@@ -115,6 +174,7 @@
         try {
           return `<div class="display" ${attr}>${katex.renderToString(block.value, { displayMode: true, throwOnError: false, strict: "ignore" })}</div>`;
         } catch (_) {
+          items.push(problem('error', 'Preview could not render a display equation', block.startOffset, block.endOffset));
           return `<div class="display error" ${attr}>${escapeHtml(block.value)}</div>`;
         }
       }
@@ -127,7 +187,7 @@
             const start = part.offset + new TextEncoder().encode(part.text.slice(0, match.index)).length;
             const end = part.offset + new TextEncoder().encode(part.text.slice(0, token.lastIndex)).length;
             try { out += `<span data-map-start="${start}" data-map-end="${end}" data-math="true">${katex.renderToString(match[1], { throwOnError: false, strict: "ignore" })}</span>`; }
-            catch (_) { out += mapped(match[0], start); }
+            catch (_) { items.push(problem('error', 'Preview could not render an inline equation', start, end)); out += mapped(match[0], start); }
           } else {
             if (match[2] === undefined) out += '<br>';
             else {
@@ -145,24 +205,38 @@
 
     function render() {
       const root = document.getElementById('document');
+      const items = [];
       const oldNodes = new Map();
       for (const block of previousBlocks) {
         const key = `${block.kind}\0${block.value}`;
         const nodes = oldNodes.get(key) || [];
-        nodes.push(block.element);
+        nodes.push(block);
         oldNodes.set(key, nodes);
       }
       const blocks = parse();
       let cursor = root.firstChild;
       for (const block of blocks) {
+        if (block.kind === 'paragraph') block.parts.forEach(part => proseWarnings(part, items));
+        if (block.kind === 'section' || block.kind === 'subsection') proseWarnings({ text: block.value, offset: block.startOffset }, items);
         const key = `${block.kind}\0${block.value}`;
         const reusable = oldNodes.get(key);
-        let element = reusable && reusable.length ? reusable.shift() : null;
+        const prior = reusable && reusable.length ? reusable.shift() : null;
+        let element = prior?.element || null;
         if (!element) {
           const template = document.createElement('template');
-          template.innerHTML = renderBlock(block);
+          const before = items.length;
+          try { template.innerHTML = renderBlock(block, items); }
+          catch (_) {
+            items.push(problem('error', 'Preview could not render this block', block.startOffset, block.endOffset));
+            template.innerHTML = `<p class="error" data-source-start="${block.start}" data-source-end="${block.end}" data-map-start="${block.startOffset}" data-map-end="${block.endOffset}">${escapeHtml(block.value)}</p>`;
+          }
+          block.errors = items.slice(before).filter(item => item.severity === 'error');
           element = template.content.firstElementChild;
         } else {
+          block.errors = (prior.errors || []).map(item => ({ ...item,
+            startOffset: item.startOffset + block.startOffset - prior.startOffset,
+            endOffset: item.endOffset + block.startOffset - prior.startOffset }));
+          items.push(...block.errors);
           const offsetShift = block.startOffset - Number(element.dataset.mapStart);
           if (offsetShift !== 0) {
             element.querySelectorAll('[data-map-start], [data-map-end]').forEach(mapped => {
@@ -185,6 +259,7 @@
         cursor = next;
       }
       previousBlocks = blocks;
+      updateProblems(items);
     }
 
     function clearSync() {
