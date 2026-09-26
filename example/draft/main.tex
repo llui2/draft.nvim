@@ -5,13 +5,18 @@
 
 \section{A Small Draft}
 
-This example is a regular LaTeX manuscript. Its source remains in
-\texttt{draft/main.tex}, while temporary build files stay in the hidden
-\texttt{.build} directory. The preview follows the source as it changes, so
-you can keep writing without leaving Neovim.
+Open this manuscript in Neovim and run \texttt{:Dp}. The source stays in
+\texttt{draft/main.tex}; Draft renders it beside the terminal. Wrapped prose
+lets Neovim's \texttt{j} and \texttt{k} follow screen lines. Place the cursor
+in this sentence and press \texttt{Ctrl-G}; the preview moves here. Select
+a word or several lines in Visual mode and sync again to inspect the mapped
+range with \texttt{Ctrl-G}. Use \texttt{Ctrl-w l} to focus Draft.
 
-The inline identity $e^{i\pi} + 1 = 0$ is a familiar example of a compact
-mathematical expression rendered alongside ordinary prose.
+In Draft, \texttt{j} and \texttt{k} scroll a little, \texttt{Ctrl-d} and
+\texttt{Ctrl-u} scroll half a page, and \texttt{gg} and \texttt{G} reach
+the ends. Click a passage or select real text, then press \texttt{Ctrl-G}
+to sync Neovim. Press \texttt{Ctrl-w h} to return. The inline identity
+$e^{i\pi} = -1$ tests math correspondence.
 
 \subsection{A few equations}
 
@@ -24,6 +29,9 @@ For positive integers, the sum of the first $n$ integers is
 \[
   \sum_{k=1}^{n} k = \frac{n(n+1)}{2}.
 \]
+
+Use \texttt{:Db} to build the PDF, \texttt{:DraftNote} on a separate .tex
+fragment for a fast note preview, and \texttt{:help draft} for concise help.
 
 Finally, Euler's formula relates the exponential and trigonometric functions:
 \[

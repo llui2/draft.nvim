@@ -1,6 +1,7 @@
 local M = { buffer = nil }
 local namespace = vim.api.nvim_create_namespace("draft.sync")
 local generation = 0
+local pending_visual
 
 vim.api.nvim_set_hl(0, "DraftSyncTarget", { default = true, bg = "#dce8f2", underline = true })
 
@@ -47,6 +48,20 @@ local function highlight(buffer, start_offset, end_offset)
   end, 1800)
 end
 
+function M.capture_visual()
+  local mode = vim.fn.mode()
+  local a, b
+  if mode:match("^[vV\22]") then
+    a = vim.fn.getpos("v")
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    b = { 0, cursor[1], cursor[2] + 1 }
+  else
+    a, b = vim.fn.getpos("'<"), vim.fn.getpos("'>")
+    mode = vim.fn.visualmode()
+  end
+  pending_visual = { a[2], a[3] - 1, b[2], b[3] - 1, mode }
+end
+
 function M.source_position()
   local buffer = M.buffer
   if not buffer or not vim.api.nvim_buf_is_valid(buffer) then
@@ -58,11 +73,14 @@ function M.source_position()
   local row, col = math.max(1, cursor[1]), math.max(0, cursor[2])
   local mode = "cursor"
   local first, last
-  if window ~= -1 and window == vim.api.nvim_get_current_win() and vim.fn.mode():match("^[vV\22]") then
-    mode = vim.fn.mode() == "V" and "line" or (vim.fn.mode():byte() == 22 and "block" or "char")
-    local anchor = vim.fn.getpos("v")
+  if pending_visual or (window ~= -1 and window == vim.api.nvim_get_current_win() and vim.fn.mode():match("^[vV\22]")) then
+    local visual = pending_visual
+    pending_visual = nil
+    local visual_mode = visual and visual[5] or vim.fn.mode()
+    mode = visual_mode == "V" and "line" or (visual_mode:byte() == 22 and "block" or "char")
+    local anchor = visual and { 0, visual[1], visual[2] + 1 } or vim.fn.getpos("v")
     local arow, acol = anchor[2], math.max(0, anchor[3] - 1)
-    local crow, ccol = row, col
+    local crow, ccol = visual and visual[3] or row, visual and visual[4] or col
     if mode == "block" then
       arow, crow, acol, ccol = math.min(arow, crow), math.max(arow, crow), math.min(acol, ccol), math.max(acol, ccol)
     elseif arow > crow or (arow == crow and acol > ccol) then
@@ -107,7 +125,7 @@ function M.jump_to_source(start_offset, end_offset, mode)
     local last_row = end_offset > start_offset and position(starts, end_offset - 1) or er
     vim.cmd("normal! V")
     vim.api.nvim_win_set_cursor(window, { last_row, 0 })
-  elseif end_offset > start_offset then
+  elseif mode ~= "cursor" and end_offset > start_offset then
     vim.cmd("normal! v")
     local end_line = lines[er] or ""
     local end_col = math.max(0, math.min(#end_line, ec - 1))

@@ -235,6 +235,7 @@ func splitTarget(terminal: NSRunningApplication?, trusted: Bool) -> SplitTarget?
 }
 
 final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
+    private static let appearanceKey = "renderedAppearance"
     private enum WorkspaceState: Equatable {
         case pairedActive
         case hidden
@@ -247,13 +248,17 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     let window: NSWindow
     private let statePath: String
     private let sourcePath: String
-    private let clickPath: String
+    private let commandPath: String
+    private var lastCommand: String?
     private let server: String
     private let nvim: String
     private let terminalPID: pid_t?
     private let target: SplitTarget?
     private let webView: WKWebView
     private let dividerControl = DividerControl()
+    private let appearanceButton = NSButton()
+    private let appearanceAccessory = NSTitlebarAccessoryViewController()
+    private var darkAppearance = false
     private var observer: AXObserver?
     private var signalSource: DispatchSourceSignal?
     private var hideSignalSource: DispatchSourceSignal?
@@ -277,10 +282,10 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private var layoutReady = false
     private(set) var warning: String?
 
-    init(url: URL, sourcePath: String, statePath: String, clickPath: String, server: String, nvim: String, terminal: NSRunningApplication?, target: SplitTarget?) {
+    init(url: URL, sourcePath: String, statePath: String, commandPath: String, server: String, nvim: String, terminal: NSRunningApplication?, target: SplitTarget?) {
         self.statePath = statePath
         self.sourcePath = sourcePath
-        self.clickPath = clickPath
+        self.commandPath = commandPath
         self.server = server
         self.nvim = nvim
         self.terminalPID = terminal?.processIdentifier
@@ -291,13 +296,16 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         let frame = NSRect(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2, width: size.width, height: size.height)
         let webView = WKWebView(frame: .zero)
         self.webView = webView
-        window = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
         super.init()
-        window.title = "Draft"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovable = target == nil
         window.collectionBehavior = [.moveToActiveSpace]
         window.minSize = NSSize(width: min(240, visible.width * 0.20), height: min(240, visible.height))
         window.contentView = webView
         window.delegate = self
+        configureAppearance()
         window.addChildWindow(dividerControl, ordered: .above)
         webView.navigationDelegate = self
         dividerControl.sourceAction = { [weak self] in self?.navigateToSource() }
@@ -314,12 +322,58 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
     }
 
+    private func configureAppearance() {
+        let saved = UserDefaults.standard.string(forKey: Self.appearanceKey)
+        darkAppearance = saved == "dark" || (saved == nil && window.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+        let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: 38, height: 28))
+        appearanceButton.frame = NSRect(x: 5, y: 0, width: 28, height: 28)
+        appearanceButton.isBordered = false
+        appearanceButton.imagePosition = .imageOnly
+        appearanceButton.target = self
+        appearanceButton.action = #selector(toggleAppearance)
+        appearanceButton.autoresizingMask = [.minXMargin, .minYMargin, .maxYMargin]
+        accessoryView.addSubview(appearanceButton)
+        appearanceAccessory.view = accessoryView
+        appearanceAccessory.layoutAttribute = .right
+        window.addTitlebarAccessoryViewController(appearanceAccessory)
+        if darkAppearance {
+            let script = WKUserScript(source: "document.documentElement.dataset.theme = 'dark'",
+                                      injectionTime: .atDocumentStart, forMainFrameOnly: true)
+            webView.configuration.userContentController.addUserScript(script)
+        }
+        applyAppearance()
+    }
+
+    @objc private func toggleAppearance() {
+        darkAppearance.toggle()
+        UserDefaults.standard.set(darkAppearance ? "dark" : "light", forKey: Self.appearanceKey)
+        applyAppearance()
+        window.makeFirstResponder(webView)
+    }
+
+    private func applyAppearance() {
+        let background = darkAppearance
+            ? NSColor(srgbRed: 28.0 / 255.0, green: 28.0 / 255.0, blue: 30.0 / 255.0, alpha: 1)
+            : NSColor.white
+        window.appearance = NSAppearance(named: darkAppearance ? .darkAqua : .aqua)
+        window.backgroundColor = background
+        webView.underPageBackgroundColor = background
+        let symbol = darkAppearance ? "sun.max" : "moon"
+        let label = darkAppearance ? "Use light appearance" : "Use dark appearance"
+        appearanceButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        appearanceButton.setAccessibilityLabel(label)
+        if pageLoaded { webView.evaluateJavaScript("window.setDraftAppearance('\(darkAppearance ? "dark" : "light")')") }
+    }
+
     private func watchSource() -> Bool {
         let directory = URL(fileURLWithPath: sourcePath).deletingLastPathComponent().path
         let descriptor = open(directory, O_EVTONLY)
         guard descriptor >= 0 else { return false }
         let watcher = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: .write, queue: .main)
-        watcher.setEventHandler { [weak self] in self?.scheduleSourceRead() }
+        watcher.setEventHandler { [weak self] in
+            self?.scheduleSourceRead()
+            self?.readCommand()
+        }
         watcher.setCancelHandler { Darwin.close(descriptor) }
         sourceWatcher = watcher
         watcher.resume()
@@ -332,6 +386,20 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         let work = DispatchWorkItem { [weak self] in self?.readSource() }
         sourceDebounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.025, execute: work)
+    }
+
+    private func readCommand() {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: commandPath)),
+              let raw = String(data: data, encoding: .utf8), raw != lastCommand,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let action = object["action"] as? String else { return }
+        lastCommand = raw
+        switch action {
+        case "sync-source": navigateToSource()
+        case "focus-preview": focusPreview()
+        case "focus-source": focusSource()
+        default: break
+        }
     }
 
     private func readSource() {
@@ -360,21 +428,16 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         pageLoaded = true
+        applyAppearance()
         readSource()
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let url = navigationAction.request.url, url.scheme == "draft", url.host == "clicked",
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let start = components.queryItems?.first(where: { $0.name == "start" })?.value,
-              let end = components.queryItems?.first(where: { $0.name == "end" })?.value else {
-            decisionHandler(.allow)
-            return
+        if let url = navigationAction.request.url, url.scheme == "draft" {
+            if url.host == "sync" { navigateToPreview(); decisionHandler(.cancel); return }
+            if url.host == "focus-source" { focusSource(); decisionHandler(.cancel); return }
         }
-        let mode = components.queryItems?.first(where: { $0.name == "mode" })?.value ?? "char"
-        try? JSONSerialization.data(withJSONObject: ["start": Int(start) ?? 0, "end": Int(end) ?? 0, "mode": mode], options: [.fragmentsAllowed])
-            .write(to: URL(fileURLWithPath: clickPath), options: .atomic)
-        decisionHandler(.cancel)
+        decisionHandler(.allow)
     }
 
     private func remoteExpression(_ expression: String) -> String? {
@@ -391,13 +454,36 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         webView.evaluateJavaScript(script)
     }
 
+    private func focusPreview() {
+        guard workspaceVisible, target != nil else { return }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(webView)
+        refreshWorkspaceState()
+    }
+
+    private func focusSource() {
+        guard let target, workspaceVisible else { return }
+        target.app.activate()
+        _ = AXUIElementPerformAction(target.axWindow, kAXRaiseAction as CFString)
+        _ = AXUIElementSetAttributeValue(target.axWindow, kAXMainAttribute as CFString, kCFBooleanTrue)
+        _ = AXUIElementSetAttributeValue(target.axWindow, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        refreshWorkspaceSoon()
+    }
+
     private func navigateToPreview() {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: clickPath)),
-              let clicked = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let start = clicked["start"] as? Int, let end = clicked["end"] as? Int else { return }
-        let mode = clicked["mode"] as? String == "line" ? "line" : "char"
+        webView.evaluateJavaScript("window.previewReadingAnchor()") { [weak self] result, _ in
+            guard let self, let anchor = result as? [String: Any],
+                  let start = anchor["start"] as? Int, let end = anchor["end"] as? Int else { return }
+            let mode = anchor["selection"] as? Bool == true ? "char" : "cursor"
+            self.syncToSource(start: start, end: end, mode: mode)
+        }
+    }
+
+    private func syncToSource(start: Int, end: Int, mode: String) {
         guard remoteExpression("luaeval('require(\"draft.sync\").jump_to_source(_A[1], _A[2], _A[3])', [\(start), \(end), '\(mode)'])") != nil else { return }
-        webView.evaluateJavaScript("window.sourceToPreview(\(start), \(end), '\(mode)')")
+        webView.evaluateJavaScript("window.highlightPreviewAnchor(\(start), \(end))")
+        focusSource()
     }
 
     private func positionDividerControl(in workspace: NSRect) {
@@ -408,7 +494,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private func showDividerControl() {
         guard layoutReady, window.isVisible, !window.isMiniaturized else { return }
         dividerControl.level = .floating
-        dividerControl.orderFrontRegardless()
+        if !dividerControl.isVisible { dividerControl.orderFront(nil) }
     }
 
     private func targetTerminalIsFocused() -> Bool {
@@ -506,20 +592,23 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     }
 
     private func applicationActivated(_ app: NSRunningApplication) {
-        refreshWorkspaceState(activatedPID: app.processIdentifier)
-        refreshWorkspaceSoon()
+        // Activation notifications can precede the new app's focused-window update.
+        // The foreground app and focused AX window are read together on the next turn.
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshWorkspaceState(returningToPair: app.processIdentifier == self?.target?.app.processIdentifier)
+        }
     }
 
     private func refreshWorkspaceSoon() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in self?.refreshWorkspaceState() }
+        DispatchQueue.main.async { [weak self] in self?.refreshWorkspaceState() }
     }
 
-    private func refreshWorkspaceState(activatedPID: pid_t? = nil) {
+    private func refreshWorkspaceState(returningToPair: Bool = false) {
         guard !closing else { transition(to: .closing); return }
         guard workspaceVisible else { transition(to: .hidden); return }
         guard !window.isMiniaturized else { transition(to: .draftMinimized); return }
 
-        let foregroundPID = activatedPID ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let foregroundPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         guard let target else {
             transition(to: foregroundPID == ProcessInfo.processInfo.processIdentifier || foregroundPID == terminalPID
                 ? .pairedActive : .unrelatedAppActive)
@@ -532,16 +621,16 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         guard !targetTerminalIsMinimized() else { transition(to: .terminalMinimized); return }
         let terminalOwnsFocusedWindow = foregroundPID == target.app.processIdentifier && targetTerminalIsFocused()
         let draftOwnsForeground = foregroundPID == ProcessInfo.processInfo.processIdentifier && targetTerminalIsFocused()
-        transition(to: terminalOwnsFocusedWindow || draftOwnsForeground ? .pairedActive : .unrelatedAppActive)
+        transition(to: terminalOwnsFocusedWindow || draftOwnsForeground ? .pairedActive : .unrelatedAppActive, returningToPair: returningToPair)
     }
 
-    private func transition(to next: WorkspaceState) {
+    private func transition(to next: WorkspaceState, returningToPair: Bool = false) {
         let changed = workspaceState != next
         workspaceState = next
         switch next {
         case .pairedActive:
             guard workspaceVisible, !window.isMiniaturized else { return }
-            if changed || !window.isVisible { window.orderFrontRegardless() }
+            if changed || !window.isVisible || returningToPair { window.orderFrontRegardless() }
             showDividerControl()
         case .hidden, .unrelatedAppActive, .terminalMinimized, .draftMinimized, .closing:
             dividerControl.orderOut(nil)
@@ -693,7 +782,8 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         window.removeChildWindow(dividerControl)
         try? FileManager.default.removeItem(atPath: sourcePath)
         try? FileManager.default.removeItem(atPath: sourcePath + ".tmp")
-        try? FileManager.default.removeItem(atPath: clickPath)
+        try? FileManager.default.removeItem(atPath: commandPath)
+        try? FileManager.default.removeItem(atPath: commandPath + ".tmp")
         transition(to: .closing)
         try? FileManager.default.removeItem(atPath: statePath)
         NSApplication.shared.terminate(nil)
@@ -754,16 +844,16 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
-guard arguments.count == 7, let terminalPID = pid_t(arguments[6]) else {
-    fputs("usage: draft-preview <html> <source> <state> <click> <server> <nvim> <terminal-pid>\n", stderr)
+guard arguments.count == 7, let terminalPID = pid_t(arguments[5]) else {
+    fputs("usage: draft-preview <html> <source> <state> <server> <nvim> <terminal-pid> <command>\n", stderr)
     exit(EXIT_FAILURE)
 }
 let htmlPath = arguments[0]
 let sourcePath = arguments[1]
 let statePath = arguments[2]
-let clickPath = arguments[3]
-let server = arguments[4]
-let nvim = arguments[5]
+let commandPath = arguments[6]
+let server = arguments[3]
+let nvim = arguments[4]
 guard FileManager.default.fileExists(atPath: htmlPath) else {
     fputs("preview HTML does not exist: \(htmlPath)\n", stderr)
     exit(EXIT_FAILURE)
@@ -778,7 +868,7 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let terminal = terminalApplication(frontmost: NSWorkspace.shared.frontmostApplication)
 let target = splitTarget(terminal: terminal, trusted: AXIsProcessTrusted())
-let session = PreviewSession(url: URL(fileURLWithPath: htmlPath), sourcePath: sourcePath, statePath: statePath, clickPath: clickPath, server: server, nvim: nvim, terminal: terminal, target: target)
+let session = PreviewSession(url: URL(fileURLWithPath: htmlPath), sourcePath: sourcePath, statePath: statePath, commandPath: commandPath, server: server, nvim: nvim, terminal: terminal, target: target)
 session.installTerminationHandler()
 writeState(pid: getpid(), terminalPID: terminal?.processIdentifier ?? terminalPID, status: "initialized", to: statePath)
 session.start()

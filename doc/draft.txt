@@ -17,6 +17,8 @@ layout when Accessibility can identify and resize the current terminal window.
 Dragging the shared divider changes the split. Closing the preview restores
 its prior terminal geometry. The preview updates while editing. Saving
 main.tex starts a background PDF build into draft/main.pdf.
+The native moon/sun titlebar control switches the rendered surface between
+light and dark appearances. Draft remembers the choice across sessions.
 
 *draft-prose*
 
@@ -33,9 +35,30 @@ preview of a LaTeX subset, not a TeX engine.
 
 *draft-navigation*
 
-The two arrow buttons on the shared divider transfer the current source
-selection to the preview or the preview selection to Neovim. Clicking rendered
-content also navigates to its source range. Display equations use equation-level
-correspondence.
+<C-g>                   Sync the other side to the current position or selection.
+:Ds  :DraftSync        Source-to-preview aliases for <C-g>.
+:DraftFocus            Focus the preview window.
+:DraftFocusSource      Focus the paired terminal window.
+
+<Plug>(draft-sync)          Normal and Visual mode source sync.
+<Plug>(draft-focus-preview) Focus preview from Normal mode.
+<Plug>(draft-focus-source)  Focus the paired terminal from Normal mode.
+
+Draft installs buffer-local Normal and Visual <C-g> mappings only while the
+buffer participates in an active preview and only if no explicit mapping
+would be overwritten. Other buffers retain Neovim's usual <C-g> behavior.
+
+The Neovim cursor or Visual selection maps to the preview. In the preview,
+the browser text selection or reading anchor maps to source. The reading
+anchor is the selected text, last clicked mapped element, or nearest mapped
+element to viewport center. Scrolling updates it. The divider arrows call
+these same sync operations. Preview selection sync selects source; an anchor
+without selection jumps to source. Clicked content sets the anchor.
+
+<C-w>l in Neovim focuses Draft while an active preview is paired. Otherwise
+it keeps ordinary right-window movement. <C-w>h in Draft focuses the exact
+paired terminal. Press <C-g> in Draft to sync its reading anchor to source.
+Draft's preview accepts j/k for roughly one rendered line,
+<C-d>/<C-u> for half a viewport, gg for top, and G for bottom.
 
 vim:tw=78:ts=8:noet:ft=help:

@@ -3,6 +3,39 @@ local M = {}
 local preview = { generation = 0, closing_pid = nil, reopen_after_close = false }
 local close_preview, open_preview_window
 
+local function unmapped(mode, lhs, buffer)
+  local local_map = vim.api.nvim_buf_call(buffer, function() return vim.fn.maparg(lhs, mode, false, true) end)
+  return type(local_map) ~= "table" or vim.tbl_isempty(local_map)
+end
+
+local function install_keys(buffer)
+  preview.keys = {}
+  for _, mode in ipairs({ "n", "x" }) do
+    if unmapped(mode, "<C-g>", buffer) then
+      vim.keymap.set(mode, "<C-g>", "<Plug>(draft-sync)", { buffer = buffer, remap = true, desc = "Sync Draft to source" })
+      table.insert(preview.keys, { mode, "<C-g>" })
+    end
+  end
+  if unmapped("n", "<C-w>l", buffer) then
+    vim.keymap.set("n", "<C-w>l", function()
+      if M.paired() then M.send("focus-preview") else vim.cmd("wincmd l") end
+    end, { buffer = buffer, desc = "Focus paired Draft or right Neovim window" })
+    table.insert(preview.keys, { "n", "<C-w>l" })
+  end
+end
+
+local function remove_keys()
+  for _, key in ipairs(preview.keys or {}) do
+    if preview.buffer and vim.api.nvim_buf_is_valid(preview.buffer) then
+      local map = vim.api.nvim_buf_call(preview.buffer, function() return vim.fn.maparg(key[2], key[1], false, true) end)
+      local ours = key[2] == "<C-g>" and map.rhs == "<Plug>(draft-sync)"
+        or key[2] == "<C-w>l" and map.desc == "Focus paired Draft or right Neovim window"
+      if ours then pcall(vim.keymap.del, key[1], key[2], { buffer = preview.buffer }) end
+    end
+  end
+  preview.keys = nil
+end
+
 local function mtime(path)
   local stat = vim.uv.fs_stat(path)
   return stat and stat.mtime.sec * 1000000000 + stat.mtime.nsec or 0
@@ -45,13 +78,16 @@ local function cleanup_startup_watch()
   end
 end
 
-local function cleanup_state(path, source, clicked, pid)
+local function cleanup_state(path, source, pid)
   local state = read_state(path)
   if not pid or (state and tonumber(state.pid) == pid) then
     pcall(vim.uv.fs_unlink, path)
     pcall(vim.uv.fs_unlink, source)
     pcall(vim.uv.fs_unlink, source .. ".tmp")
-    pcall(vim.uv.fs_unlink, clicked)
+    if preview.command then
+      pcall(vim.uv.fs_unlink, preview.command)
+      pcall(vim.uv.fs_unlink, preview.command .. ".tmp")
+    end
   end
 end
 
@@ -133,6 +169,7 @@ function M.toggle(note)
   if preview.pid and helper_alive(preview.pid) then
     if preview.hidden then
       preview.hidden = false
+      install_keys(preview.buffer)
       write_source(table.concat(vim.api.nvim_buf_get_lines(preview.buffer, 0, -1, false), "\n"))
       pcall(vim.uv.kill, preview.pid, "sigusr2")
     else
@@ -183,7 +220,7 @@ function M.toggle(note)
   local session = tostring(vim.fn.getpid())
   preview.source = vim.fs.joinpath(state_dir, "preview-source-" .. session .. ".json")
   preview.state = vim.fs.joinpath(state_dir, "preview-state-" .. session .. ".json")
-  preview.clicked = vim.fs.joinpath(state_dir, "preview-click-" .. session .. ".json")
+  preview.command = vim.fs.joinpath(state_dir, "preview-command-" .. session .. ".json")
   preview.server = vim.v.servername ~= "" and vim.v.servername or vim.fn.serverstart()
   require("draft.sync").set_buffer(vim.api.nvim_get_current_buf())
 
@@ -196,20 +233,22 @@ function M.toggle(note)
     wait_for_external_close(prior_pid, vim.uv.hrtime() + 3000000000)
     return
   end
-  cleanup_state(preview.state, preview.source, preview.clicked)
+  cleanup_state(preview.state, preview.source)
 
   preview.hidden = false
   preview.html = runtime
   preview.buffer = vim.api.nvim_get_current_buf()
+  install_keys(preview.buffer)
   require("draft.prose").enable(preview.buffer)
   if not watch_preview(vim.api.nvim_get_current_buf()) then
     cleanup_watch()
-    cleanup_state(preview.state, preview.source, preview.clicked)
+    remove_keys()
+    cleanup_state(preview.state, preview.source)
     return
   end
   local helper_dir = vim.fs.joinpath(vim.fn.stdpath("cache"), "draft.nvim")
   vim.fn.mkdir(helper_dir, "p")
-  open_preview_window(vim.fs.joinpath(helper_dir, "draft-preview"), preview.html, preview.source, preview.state, preview.clicked, preview.server, vim.v.progpath, window_script)
+  open_preview_window(vim.fs.joinpath(helper_dir, "draft-preview"), preview.html, preview.source, preview.state, preview.server, vim.v.progpath, window_script)
 end
 
 close_preview = function()
@@ -219,7 +258,8 @@ close_preview = function()
     preview.pid, preview.starting, preview.hidden = nil, false, false
     cleanup_startup_watch()
     cleanup_watch()
-    cleanup_state(preview.state, preview.source, preview.clicked)
+    remove_keys()
+    cleanup_state(preview.state, preview.source)
     vim.notify("draft.nvim: preview closed")
     return
   end
@@ -228,14 +268,15 @@ close_preview = function()
     preview.hidden = true
     pcall(vim.uv.kill, pid, "sigusr1")
   elseif not pid then
-    cleanup_state(preview.state, preview.source, preview.clicked)
+    cleanup_state(preview.state, preview.source)
   end
   preview.starting = false
+  remove_keys()
   if not pid then cleanup_watch() end
   vim.notify("draft.nvim: preview hidden")
 end
 
-open_preview_window = function(binary, html, source, state, clicked, server, nvim, window_script)
+open_preview_window = function(binary, html, source, state, server, nvim, window_script)
   local function open()
     local notified = false
     local opened = false
@@ -249,14 +290,15 @@ open_preview_window = function(binary, html, source, state, clicked, server, nvi
       vim.notify("draft.nvim: preview helper failed\n" .. message, vim.log.levels.ERROR)
     end
 
-    process = vim.system({ binary, html, source, state, clicked, server, nvim, tostring(vim.fn.getpid()) }, { detach = true, text = true }, function(result)
+    process = vim.system({ binary, html, source, state, server, nvim, tostring(vim.fn.getpid()), preview.command }, { detach = true, text = true }, function(result)
       vim.schedule(function()
         local current = preview.pid == process.pid
-        cleanup_state(state, source, clicked, process.pid)
+        cleanup_state(state, source, process.pid)
         if current then
           preview.pid = nil
           preview.starting = false
           cleanup_watch()
+          remove_keys()
         end
         local intentional = preview.closing_pid == process.pid
         if intentional then
@@ -342,7 +384,8 @@ open_preview_window = function(binary, html, source, state, clicked, server, nvi
       preview.starting = false
       if result.code ~= 0 then
         cleanup_watch()
-        cleanup_state(state, source, clicked)
+        remove_keys()
+        cleanup_state(state, source)
         vim.notify("draft.nvim: could not compile preview window\n" .. (result.stderr or result.stdout), vim.log.levels.ERROR)
         return
       end
@@ -357,7 +400,8 @@ open_preview_window = function(binary, html, source, state, clicked, server, nvi
           preview.starting = false
           if signature.code ~= 0 then
             cleanup_watch()
-            cleanup_state(state, source, clicked)
+            remove_keys()
+            cleanup_state(state, source)
             vim.notify("draft.nvim: could not sign preview helper\n" .. (signature.stderr or signature.stdout), vim.log.levels.ERROR)
             return
           end
@@ -368,12 +412,32 @@ open_preview_window = function(binary, html, source, state, clicked, server, nvi
   end)
 end
 
+function M.active()
+  return preview.pid and not preview.hidden and helper_alive(preview.pid) or false
+end
+
+function M.paired()
+  if not M.active() then return false end
+  local state = read_state(preview.state)
+  return state and state.status == "visible" and not (state.warning or ""):match("split mode unavailable") or false
+end
+
+function M.send(action)
+  if not M.active() then return false end
+  local temporary = preview.command .. ".tmp"
+  if vim.fn.writefile({ vim.json.encode({ action = action, nonce = vim.uv.hrtime() }) }, temporary) ~= 0 then return false end
+  local renamed = vim.uv.fs_rename(temporary, preview.command)
+  if not renamed then pcall(vim.uv.fs_unlink, temporary) end
+  return renamed ~= nil
+end
+
 function M.stop()
   preview.generation = preview.generation + 1
   cleanup_startup_watch()
   if preview.pid then pcall(vim.uv.kill, preview.pid, "sigterm") end
   preview.pid, preview.starting, preview.hidden = nil, false, false
   cleanup_watch()
+  remove_keys()
 end
 
 return M

@@ -7,23 +7,41 @@
   <script defer src="katex/katex.min.js"></script>
   <style>
     * { box-sizing: border-box; }
+    :root {
+      color-scheme: light;
+      --background: #fff;
+      --foreground: #252525;
+      --error: #a33;
+      --sync-fill: rgba(92, 139, 176, .18);
+      --sync-line: rgba(92, 139, 176, .5);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --background: #1c1c1e;
+      --foreground: #e5e5e7;
+      --error: #ff9b96;
+      --sync-fill: rgba(130, 178, 220, .24);
+      --sync-line: rgba(130, 178, 220, .65);
+    }
+    html { background: var(--background); }
     body {
       max-width: 760px;
       margin: 0 auto;
       padding: 56px 48px 96px;
-      color: #252525;
-      background: #fff;
+      color: var(--foreground);
+      background: var(--background);
       font: 17px/1.72 Georgia, "Times New Roman", serif;
       -webkit-font-smoothing: antialiased;
     }
     h1 { margin: 2.2em 0 .8em; font-size: 1.65em; font-weight: 500; }
     h2 { margin: 1.8em 0 .65em; font-size: 1.25em; font-weight: 500; }
     p { margin: 0 0 1em; }
+    .texttt { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: .9em; }
     .display { margin: 1.3em 0; overflow-x: auto; text-align: center; }
-    .error { color: #a33; white-space: pre-wrap; }
+    .error { color: var(--error); white-space: pre-wrap; }
     [data-source-start] { scroll-margin-block: 42vh; }
-    ::highlight(draft-sync) { background: rgba(92, 139, 176, .18); text-decoration: underline; text-decoration-color: rgba(92, 139, 176, .5); }
-    .sync-target { background: rgba(92, 139, 176, .14); }
+    ::highlight(draft-sync) { background: var(--sync-fill); text-decoration: underline; text-decoration-color: var(--sync-line); }
+    .sync-target { background: var(--sync-fill); }
     @media (max-width: 600px) { body { padding: 28px 22px 60px; } }
   </style>
 </head>
@@ -34,6 +52,9 @@
     let previousBlocks = [];
     let highlightTimer;
     let syncRange;
+    window.setDraftAppearance = function(mode) {
+      document.documentElement.dataset.theme = mode === 'dark' ? 'dark' : 'light';
+    };
     const escapeHtml = text => text.replace(/[&<>"']/g, char => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[char]);
@@ -111,7 +132,7 @@
             if (match[2] === undefined) out += '<br>';
             else {
               const textStart = match.index + match[0].indexOf(match[2]);
-              out += mapped(match[2], part.offset + new TextEncoder().encode(part.text.slice(0, textStart)).length);
+              out += `<span class="texttt">${mapped(match[2], part.offset + new TextEncoder().encode(part.text.slice(0, textStart)).length)}</span>`;
             }
           }
           cursor = token.lastIndex;
@@ -243,42 +264,78 @@
       if (range) highlight(range, block); else highlight(null, block);
     };
 
-    function sendPreviewRange(start, end, mode = 'char') {
-      window.location.href = `draft://clicked?start=${start}&end=${end}&mode=${mode}`;
-    };
-
     document.getElementById('document').addEventListener('mousedown', () => {
       clearTimeout(highlightTimer);
       if (window.CSS && CSS.highlights) CSS.highlights.delete('draft-sync');
       syncRange = null;
     });
 
-    document.getElementById('document').addEventListener('mouseup', event => {
-      const selection = window.getSelection();
-      if (selection && !selection.isCollapsed && document.getElementById('document').contains(selection.anchorNode)) {
-        const range = selection.getRangeAt(0);
-        const startSpan = range.startContainer.parentElement?.closest('[data-map-start][data-map-end]');
-        const endSpan = range.endContainer.parentElement?.closest('[data-map-start][data-map-end]');
-        if (startSpan && endSpan && !startSpan.closest('.display') && !endSpan.closest('.display')) {
-          const toByte = (span, node, offset) => {
-            if (span.dataset.math) return Number(span.dataset.mapStart);
-            const before = [...span.childNodes].reduce((n, child) => child === node ? n : n + child.textContent.length, 0) + offset;
-            return Number(span.dataset.mapStart) + new TextEncoder().encode((span.textContent || '').slice(0, before)).length;
-          };
-          const toEndByte = (span, node, offset) => span.dataset.math ? Number(span.dataset.mapEnd) : toByte(span, node, offset);
-          const a = toByte(startSpan, range.startContainer, range.startOffset);
-          const b = toEndByte(endSpan, range.endContainer, range.endOffset);
-          sendPreviewRange(Math.min(a, b), Math.max(a, b));
-          return;
+    let clickedAnchor = null;
+    let pendingG = false;
+    function centerAnchor() {
+      const center = window.innerHeight / 2;
+      let nearest = null, distance = Infinity;
+      for (const element of document.querySelectorAll('[data-map-start][data-map-end]')) {
+        const rect = element.getBoundingClientRect();
+        if (rect.bottom < 0 || rect.top > innerHeight) continue;
+        const gap = Math.abs((rect.top + rect.bottom) / 2 - center);
+        if (gap < distance || (gap === distance && nearest?.contains(element))) {
+          nearest = element; distance = gap;
         }
       }
-      const element = event.target.closest('[data-map-start][data-map-end]');
-      if (element) {
-        const display = element.closest('.display');
-        const target = display || element;
-        sendPreviewRange(target.dataset.mapStart, target.dataset.mapEnd, display ? 'line' : 'char');
-      }
+      return nearest;
+    }
+    window.addEventListener('scroll', () => { clickedAnchor = null; }, { passive: true });
+    document.getElementById('document').addEventListener('click', event => {
+      clickedAnchor = event.target.closest('[data-map-start][data-map-end]');
     });
+    function selectionAnchor() {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !document.getElementById('document').contains(selection.anchorNode)) return null;
+      const range = selection.getRangeAt(0);
+      if (range === syncRange) return null;
+      const a = range.startContainer.parentElement?.closest('[data-map-start][data-map-end]');
+      const b = range.endContainer.parentElement?.closest('[data-map-start][data-map-end]');
+      if (!a || !b) return null;
+      if (a.dataset.math || b.dataset.math || a.closest('.display') || b.closest('.display'))
+        return { start: Number(a.dataset.mapStart), end: Number(b.dataset.mapEnd), selection: true };
+      const offset = (span, node, at) => {
+        const r = document.createRange(); r.selectNodeContents(span); r.setEnd(node, at);
+        return Number(span.dataset.mapStart) + new TextEncoder().encode(r.toString()).length;
+      };
+      return { start: offset(a, range.startContainer, range.startOffset), end: offset(b, range.endContainer, range.endOffset), selection: true };
+    }
+    window.previewReadingAnchor = function() {
+      const selection = selectionAnchor();
+      if (selection) return selection;
+      const element = clickedAnchor?.isConnected ? clickedAnchor : centerAnchor();
+      if (!element) return null;
+      return { start: Number(element.dataset.mapStart), end: Number(element.dataset.mapEnd), selection: false };
+    };
+    window.highlightPreviewAnchor = function(start, end) {
+      const range = rangeFor(start, end);
+      const block = [...document.querySelectorAll('[data-source-start]')].find(el => Number(el.dataset.mapStart) <= start && Number(el.dataset.mapEnd) >= start);
+      highlight(range, block);
+    };
+    const lineHeight = () => parseFloat(getComputedStyle(document.body).lineHeight) || 29;
+    window.addEventListener('keydown', event => {
+      if (event.metaKey || event.altKey || event.target.closest('input,textarea,[contenteditable]')) return;
+      if (pendingWindow && event.key !== 'h') pendingWindow = false;
+      if (pendingG && event.key !== 'g') pendingG = false;
+      const key = event.key;
+      if (event.ctrlKey && key.toLowerCase() === 'd') window.scrollBy({ top: innerHeight * .5, behavior: 'smooth' });
+      else if (event.ctrlKey && key.toLowerCase() === 'u') window.scrollBy({ top: -innerHeight * .5, behavior: 'smooth' });
+      else if (event.ctrlKey && key.toLowerCase() === 'w') { pendingG = false; pendingWindow = true; event.preventDefault(); return; }
+      else if (key === 'h' && pendingWindow) { pendingWindow = false; window.location.href = 'draft://focus-source'; }
+      else if (!event.ctrlKey && key === 'j') window.scrollBy({ top: lineHeight(), behavior: 'smooth' });
+      else if (!event.ctrlKey && key === 'k') window.scrollBy({ top: -lineHeight(), behavior: 'smooth' });
+      else if (!event.ctrlKey && key === 'g') { if (pendingG) { window.scrollTo({ top: 0, behavior: 'smooth' }); pendingG = false; } else pendingG = true; }
+      else if (!event.ctrlKey && key === 'G') window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+      else if (event.ctrlKey && key.toLowerCase() === 'g') window.location.href = 'draft://sync';
+      else return;
+      event.preventDefault();
+    });
+    let pendingWindow = false;
 
     window.updateSource = function(nextSource) {
       source = nextSource;
