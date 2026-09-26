@@ -27,7 +27,7 @@
 <body>
   <main id="document"></main>
   <script>
-    const source = __SOURCE__;
+    let source = "";
     const escapeHtml = text => text.replace(/[&<>"']/g, char => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[char]);
@@ -77,6 +77,14 @@
       }).join('\n');
       document.getElementById('document').innerHTML = html;
     }
+
+    window.updateSource = function(nextSource) {
+      const x = window.scrollX;
+      const y = window.scrollY;
+      source = nextSource;
+      render();
+      requestAnimationFrame(() => window.scrollTo(x, y));
+    };
 
     window.addEventListener('load', render);
   </script>
