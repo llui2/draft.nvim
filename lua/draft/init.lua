@@ -46,6 +46,16 @@ local function helper_alive(pid)
   return result.code == 0 and vim.fs.basename(vim.trim(result.stdout or "")) == "draft-preview"
 end
 
+local function stop_helper(pid)
+  if not helper_alive(pid) then
+    return true
+  end
+  pcall(vim.uv.kill, pid, "sigterm")
+  return vim.wait(3000, function()
+    return not helper_alive(pid)
+  end, 50)
+end
+
 local function read_state(path)
   if vim.fn.filereadable(path) ~= 1 then
     return nil
@@ -97,8 +107,9 @@ function M.preview()
   local prior_state = clear_stale_state(preview.state)
   if prior_state then
     local old_pid = tonumber(prior_state.pid)
-    if old_pid and old_pid ~= vim.fn.getpid() then
-      pcall(vim.uv.kill, old_pid, "sigterm")
+    if old_pid and not stop_helper(old_pid) then
+      vim.notify("draft.nvim: existing preview helper did not close", vim.log.levels.ERROR)
+      return
     end
     vim.uv.fs_unlink(preview.state)
   end
@@ -113,9 +124,16 @@ end
 
 close_preview = function()
   preview.generation = preview.generation + 1
-  if preview.pid and helper_alive(preview.pid) then
-    preview.closing_pid = preview.pid
-    pcall(vim.uv.kill, preview.pid, "sigterm")
+  if preview.pid then
+    local closing_pid = preview.pid
+    if helper_alive(closing_pid) then
+      preview.closing_pid = closing_pid
+      if not stop_helper(closing_pid) then
+        preview.closing_pid = nil
+        vim.notify("draft.nvim: preview helper did not close", vim.log.levels.ERROR)
+        return
+      end
+    end
   end
   if preview.state then
     pcall(vim.uv.fs_unlink, preview.state)
@@ -209,7 +227,11 @@ open_preview_window = function(binary, html, state, window_script)
       if helper_state and tonumber(helper_state.pid) == process.pid then
         if helper_state.status == "visible" then
           notified = true
-          vim.notify("draft.nvim: preview opened")
+          if helper_state.warning then
+            vim.notify("draft.nvim: preview opened; " .. helper_state.warning, vim.log.levels.WARN)
+          else
+            vim.notify("draft.nvim: preview opened")
+          end
           return
         elseif helper_state.status == "failed" then
           fail(helper_state.error or "the helper could not show its window")
