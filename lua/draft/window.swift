@@ -453,7 +453,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     }
 
     private func navigateToSource() {
-        guard let json = remoteExpression("luaeval('require(\"draft.sync\").source_position()')"),
+        guard let json = remoteExpression("luaeval('require(\"draft.sync\").source_position_for_sync()')"),
               let data = json.data(using: .utf8),
               let position = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let start = position["start"] as? Int, let end = position["finish"] as? Int else { return }

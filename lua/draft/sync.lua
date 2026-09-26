@@ -62,6 +62,13 @@ function M.capture_visual()
   pending_visual = { a[2], a[3] - 1, b[2], b[3] - 1, mode }
 end
 
+function M.source_position_for_sync()
+  if vim.fn.mode():match("^[vV\22]") and not pending_visual then
+    M.capture_visual()
+  end
+  return M.source_position()
+end
+
 function M.source_position()
   local buffer = M.buffer
   if not buffer or not vim.api.nvim_buf_is_valid(buffer) then
