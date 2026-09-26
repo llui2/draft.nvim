@@ -11,7 +11,9 @@ project's `draft/` directory.
   on the left 55% and Draft on the right 45%. Drag either side of the
   shared divider to resize the split. Closing Draft with `:Dp` or its close
   button restores the terminal's original position and size. Draft remains a
-  standard macOS window with normal resizing and minimizing behavior.
+  standard macOS window with normal resizing and minimizing behavior. A small
+  native arrow control on the divider navigates between the source location
+  and its rendered paragraph or equation.
 - `:DraftBuild` or `:Db` builds `draft/main.tex` in the background.
 
 The preview updates while typing and supports paragraphs, `\section{}`,
@@ -36,7 +38,11 @@ terminal for split mode. Without it, Draft warns and opens as a separate normal
 window without changing the terminal.
 
 ```sh
-nvim path/to/project/draft/main.tex
+nvim project/draft/main.tex
 ```
 
 Run `:Dp` to open the preview, type to update it, and save to build the PDF.
+
+`draft.nvim` is a Neovim plugin; regular Vim does not load Neovim's
+`init.lua` or plugins. On systems where `vim` is regular Vim, use `nvim` as
+shown above.

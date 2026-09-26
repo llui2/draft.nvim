@@ -36,12 +36,13 @@ local function cleanup_watch()
   end
 end
 
-local function cleanup_state(path, source, pid)
+local function cleanup_state(path, source, clicked, pid)
   local state = read_state(path)
   if not pid or (state and tonumber(state.pid) == pid) then
     pcall(vim.uv.fs_unlink, path)
     pcall(vim.uv.fs_unlink, source)
     pcall(vim.uv.fs_unlink, source .. ".tmp")
+    pcall(vim.uv.fs_unlink, clicked)
   end
 end
 
@@ -152,8 +153,12 @@ function M.toggle()
 
   vim.fn.mkdir(vim.fs.joinpath(draft_dir, ".build"), "p")
   preview.html = vim.fs.joinpath(draft_dir, ".build", "preview.html")
-  preview.source = vim.fs.joinpath(draft_dir, ".build", "preview-source.json")
-  preview.state = vim.fs.joinpath(draft_dir, ".build", "preview-state.json")
+  local session = tostring(vim.fn.getpid())
+  preview.source = vim.fs.joinpath(draft_dir, ".build", "preview-source-" .. session .. ".json")
+  preview.state = vim.fs.joinpath(draft_dir, ".build", "preview-state-" .. session .. ".json")
+  preview.clicked = vim.fs.joinpath(draft_dir, ".build", "preview-click-" .. session .. ".json")
+  preview.server = vim.v.servername ~= "" and vim.v.servername or vim.fn.serverstart()
+  require("draft.sync").set_buffer(vim.api.nvim_get_current_buf())
 
   local prior_state = read_state(preview.state)
   local prior_pid = prior_state and tonumber(prior_state.pid)
@@ -164,7 +169,7 @@ function M.toggle()
     wait_for_external_close(prior_pid, vim.uv.hrtime() + 3000000000)
     return
   end
-  cleanup_state(preview.state, preview.source)
+  cleanup_state(preview.state, preview.source, preview.clicked)
 
   local copied, err = vim.uv.fs_copyfile(runtime, preview.html)
   if not copied then
@@ -173,12 +178,12 @@ function M.toggle()
   end
   if not watch_preview(vim.api.nvim_get_current_buf()) then
     cleanup_watch()
-    cleanup_state(preview.state, preview.source)
+    cleanup_state(preview.state, preview.source, preview.clicked)
     return
   end
   local helper_dir = vim.fs.joinpath(vim.fn.stdpath("cache"), "draft.nvim")
   vim.fn.mkdir(helper_dir, "p")
-  open_preview_window(vim.fs.joinpath(helper_dir, "draft-preview"), preview.html, preview.source, preview.state, window_script)
+  open_preview_window(vim.fs.joinpath(helper_dir, "draft-preview"), preview.html, preview.source, preview.state, preview.clicked, preview.server, vim.v.progpath, window_script)
 end
 
 close_preview = function()
@@ -188,14 +193,14 @@ close_preview = function()
     preview.closing_pid = pid
     pcall(vim.uv.kill, pid, "sigterm")
   elseif not pid then
-    cleanup_state(preview.state, preview.source)
+    cleanup_state(preview.state, preview.source, preview.clicked)
   end
   preview.pid, preview.starting = nil, false
   cleanup_watch()
   vim.notify("draft.nvim: preview closed")
 end
 
-open_preview_window = function(binary, html, source, state, window_script)
+open_preview_window = function(binary, html, source, state, clicked, server, nvim, window_script)
   local function open()
     local notified = false
     local opened = false
@@ -209,10 +214,10 @@ open_preview_window = function(binary, html, source, state, window_script)
       vim.notify("draft.nvim: preview helper failed\n" .. message, vim.log.levels.ERROR)
     end
 
-    process = vim.system({ binary, html, source, state, tostring(vim.fn.getpid()) }, { detach = true, text = true }, function(result)
+    process = vim.system({ binary, html, source, state, clicked, server, nvim, tostring(vim.fn.getpid()) }, { detach = true, text = true }, function(result)
       vim.schedule(function()
         local current = preview.pid == process.pid
-        cleanup_state(state, source, process.pid)
+        cleanup_state(state, source, clicked, process.pid)
         if current then
           preview.pid = nil
           preview.starting = false
@@ -287,7 +292,7 @@ open_preview_window = function(binary, html, source, state, window_script)
       preview.starting = false
       if result.code ~= 0 then
         cleanup_watch()
-        cleanup_state(state, source)
+        cleanup_state(state, source, clicked)
         vim.notify("draft.nvim: could not compile preview window\n" .. (result.stderr or result.stdout), vim.log.levels.ERROR)
         return
       end
@@ -302,7 +307,7 @@ open_preview_window = function(binary, html, source, state, window_script)
           preview.starting = false
           if signature.code ~= 0 then
             cleanup_watch()
-            cleanup_state(state, source)
+            cleanup_state(state, source, clicked)
             vim.notify("draft.nvim: could not sign preview helper\n" .. (signature.stderr or signature.stdout), vim.log.levels.ERROR)
             return
           end

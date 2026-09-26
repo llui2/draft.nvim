@@ -11,6 +11,66 @@ struct PreviewState: Codable {
     let warning: String?
 }
 
+final class DividerControl: NSPanel {
+    var sourceAction: (() -> Void)?
+    var previewAction: (() -> Void)?
+
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 34, height: 58), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isFloatingPanel = true
+        level = .floating
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+
+        let effect = NSVisualEffectView(frame: contentRect(forFrameRect: frame))
+        effect.material = .popover
+        effect.blendingMode = .withinWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = 9
+        effect.layer?.masksToBounds = true
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.distribution = .fill
+        stack.spacing = 0
+        for (symbol, label, action) in [("arrow.right", "Source to preview", #selector(sourcePressed)), ("arrow.left", "Preview to source", #selector(previewPressed))] {
+            let button = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: label)!, target: self, action: action)
+            button.setAccessibilityLabel(label)
+            button.isBordered = false
+            button.imagePosition = .imageOnly
+            button.contentTintColor = .secondaryLabelColor
+            button.setButtonType(.momentaryChange)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.widthAnchor.constraint(equalToConstant: 32).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+            stack.addArrangedSubview(button)
+        }
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        stack.insertArrangedSubview(separator, at: 1)
+        effect.addSubview(stack)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 1),
+            stack.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -1),
+            stack.topAnchor.constraint(equalTo: effect.topAnchor, constant: 1),
+            stack.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -1),
+        ])
+        contentView = effect
+    }
+
+    @objc private func sourcePressed() { sourceAction?() }
+    @objc private func previewPressed() { previewAction?() }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+}
+
 func writeState(pid: Int32, terminalPID: pid_t?, status: String, error: String? = nil, warning: String? = nil, to path: String) {
     let state = PreviewState(pid: pid, terminalPID: terminalPID, status: status, error: error, warning: warning)
     guard let data = try? JSONEncoder().encode(state) else { return }
@@ -177,13 +237,19 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     let window: NSWindow
     private let statePath: String
     private let sourcePath: String
+    private let clickPath: String
+    private let server: String
+    private let nvim: String
     private let terminalPID: pid_t?
     private let terminalApp: NSRunningApplication?
     private let target: SplitTarget?
     private let webView: WKWebView
+    private let dividerControl = DividerControl()
     private var observer: AXObserver?
     private var signalSource: DispatchSourceSignal?
     private var sourceWatcher: DispatchSourceFileSystemObject?
+    private var activationObserver: NSObjectProtocol?
+    private var focusSyncing = false
     private var sourceDebounce: DispatchWorkItem?
     private var currentSource: String?
     private var sentSource: String?
@@ -195,9 +261,12 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private var closing = false
     private(set) var warning: String?
 
-    init(url: URL, sourcePath: String, statePath: String, terminal: NSRunningApplication?, target: SplitTarget?) {
+    init(url: URL, sourcePath: String, statePath: String, clickPath: String, server: String, nvim: String, terminal: NSRunningApplication?, target: SplitTarget?) {
         self.statePath = statePath
         self.sourcePath = sourcePath
+        self.clickPath = clickPath
+        self.server = server
+        self.nvim = nvim
         self.terminalPID = terminal?.processIdentifier
         self.terminalApp = terminal
         self.target = target
@@ -214,6 +283,8 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         window.contentView = webView
         window.delegate = self
         webView.navigationDelegate = self
+        dividerControl.sourceAction = { [weak self] in self?.navigateToSource() }
+        dividerControl.previewAction = { [weak self] in self?.navigateToPreview() }
 
         if target == nil {
             warning = AXIsProcessTrusted()
@@ -275,16 +346,75 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         readSource()
     }
 
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url, url.scheme == "draft", url.host == "clicked",
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let start = components.queryItems?.first(where: { $0.name == "start" })?.value,
+              let end = components.queryItems?.first(where: { $0.name == "end" })?.value else {
+            decisionHandler(.allow)
+            return
+        }
+        try? JSONSerialization.data(withJSONObject: ["start": Int(start) ?? 1, "end": Int(end) ?? 1], options: [.fragmentsAllowed])
+            .write(to: URL(fileURLWithPath: clickPath), options: .atomic)
+        decisionHandler(.cancel)
+    }
+
+    private func remoteExpression(_ expression: String) -> String? {
+        commandOutput(nvim, ["--server", server, "--remote-expr", expression])
+    }
+
+    private func navigateToSource() {
+        guard let json = remoteExpression("luaeval('require(\"draft.sync\").source_position()')"),
+              let data = json.data(using: .utf8),
+              let position = try? JSONSerialization.jsonObject(with: data) as? [String: Int],
+              let start = position["start"], let end = position["finish"] else { return }
+        let script = "window.sourceToPreview(\(start), \(end))"
+        webView.evaluateJavaScript(script)
+    }
+
+    private func navigateToPreview() {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: clickPath)),
+              let clicked = try? JSONSerialization.jsonObject(with: data) as? [String: Int],
+              let line = clicked["start"] else { return }
+        _ = remoteExpression("luaeval('require(\"draft.sync\").jump_to_source(_A)', \(line))")
+    }
+
+    private func positionDividerControl(in workspace: NSRect) {
+        let frame = NSRect(x: splitX - 17, y: workspace.midY - 29, width: 34, height: 58)
+        dividerControl.setFrame(frame, display: true)
+        dividerControl.orderFrontRegardless()
+    }
+
     func start() {
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, !self.closing, let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            if app.processIdentifier == ProcessInfo.processInfo.processIdentifier {
+                self.dividerControl.orderFrontRegardless()
+                self.pairTerminalForward()
+            } else if app.processIdentifier == self.terminalPID {
+                self.dividerControl.orderFrontRegardless()
+                self.keepDraftAvailable()
+            } else {
+                self.dividerControl.orderOut(nil)
+            }
+        }
         guard let target else {
             returnFocusToTerminal()
             return
         }
         var created: AXObserver?
-        let status = AXObserverCreate(target.app.processIdentifier, { _, element, _, refcon in
+        let status = AXObserverCreate(target.app.processIdentifier, { _, element, notification, refcon in
             guard let refcon else { return }
             let session = Unmanaged<PreviewSession>.fromOpaque(refcon).takeUnretainedValue()
-            DispatchQueue.main.async { session.terminalChanged(element) }
+            DispatchQueue.main.async {
+                if notification as String == kAXFocusedWindowChangedNotification as String {
+                    session.terminalFocusChanged()
+                } else {
+                    session.terminalChanged(element)
+                }
+            }
         }, &created)
         guard status == .success, let created else {
             warning = "split mode unavailable: could not observe the terminal window"
@@ -295,7 +425,9 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         let context = Unmanaged.passUnretained(self).toOpaque()
         let moved = AXObserverAddNotification(created, target.axWindow, kAXMovedNotification as CFString, context)
         let resized = AXObserverAddNotification(created, target.axWindow, kAXResizedNotification as CFString, context)
-        guard moved == .success && resized == .success else {
+        let application = AXUIElementCreateApplication(target.app.processIdentifier)
+        let focused = AXObserverAddNotification(created, application, kAXFocusedWindowChangedNotification as CFString, context)
+        guard moved == .success && resized == .success && focused == .success else {
             warning = "split mode unavailable: could not observe the terminal window"
             stopObserving()
             returnFocusToTerminal()
@@ -314,7 +446,34 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
             returnFocusToTerminal()
             return
         }
+        positionDividerControl(in: visible)
         returnFocusToTerminal()
+    }
+
+    private func terminalFocusChanged() {
+        guard !closing, let target else { return }
+        let application = AXUIElementCreateApplication(target.app.processIdentifier)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute as CFString, &value) == .success,
+              let value, CFEqual(value, target.axWindow) else { return }
+        keepDraftAvailable()
+    }
+
+    private func pairTerminalForward() {
+        guard !focusSyncing, let target else { return }
+        focusSyncing = true
+        AXUIElementPerformAction(target.axWindow, kAXRaiseAction as CFString)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in self?.focusSyncing = false }
+    }
+
+    private func keepDraftAvailable() {
+        if focusSyncing {
+            window.orderFrontRegardless()
+            return
+        }
+        focusSyncing = true
+        window.orderFrontRegardless()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in self?.focusSyncing = false }
     }
 
     private func returnFocusToTerminal() {
@@ -342,6 +501,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         previewExpected = previewFrame
         let success = setAXFrame(terminalFrame, window: target.axWindow, screen: target.screen)
         window.setFrame(previewFrame, display: true)
+        positionDividerControl(in: target.screen.visibleFrame)
         applying = false
         return success
     }
@@ -374,6 +534,8 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     func windowDidMove(_ notification: Notification) { previewChanged() }
     func windowDidResize(_ notification: Notification) { previewChanged() }
     func windowDidEndLiveResize(_ notification: Notification) { returnFocusToTerminal() }
+    func windowDidMiniaturize(_ notification: Notification) { dividerControl.orderOut(nil) }
+    func windowDidDeminiaturize(_ notification: Notification) { dividerControl.orderFrontRegardless() }
 
     private func previewChanged() {
         guard !closing, !applying, let target, let expected = previewExpected else { return }
@@ -398,6 +560,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         guard let observer, let target else { return }
         AXObserverRemoveNotification(observer, target.axWindow, kAXMovedNotification as CFString)
         AXObserverRemoveNotification(observer, target.axWindow, kAXResizedNotification as CFString)
+        AXObserverRemoveNotification(observer, AXUIElementCreateApplication(target.app.processIdentifier), kAXFocusedWindowChangedNotification as CFString)
         CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
         self.observer = nil
     }
@@ -418,6 +581,10 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         closing = true
         signalSource?.cancel()
         signalSource = nil
+        if let activationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
+            self.activationObserver = nil
+        }
         sourceDebounce?.cancel()
         sourceDebounce = nil
         sourceWatcher?.cancel()
@@ -426,6 +593,8 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         restoreTerminal()
         try? FileManager.default.removeItem(atPath: sourcePath)
         try? FileManager.default.removeItem(atPath: sourcePath + ".tmp")
+        try? FileManager.default.removeItem(atPath: clickPath)
+        dividerControl.orderOut(nil)
         try? FileManager.default.removeItem(atPath: statePath)
         NSApplication.shared.terminate(nil)
     }
@@ -451,18 +620,20 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
-guard arguments.count == 4, let terminalPID = pid_t(arguments[3]) else {
-    fputs("usage: draft-preview <html> <source> <state> <terminal-pid>\n", stderr)
+guard arguments.count == 7, let terminalPID = pid_t(arguments[6]) else {
+    fputs("usage: draft-preview <html> <source> <state> <click> <server> <nvim> <terminal-pid>\n", stderr)
     exit(EXIT_FAILURE)
 }
 let htmlPath = arguments[0]
 let sourcePath = arguments[1]
 let statePath = arguments[2]
+let clickPath = arguments[3]
+let server = arguments[4]
+let nvim = arguments[5]
 guard FileManager.default.fileExists(atPath: htmlPath) else {
     fputs("preview HTML does not exist: \(htmlPath)\n", stderr)
     exit(EXIT_FAILURE)
 }
-
 guard FileManager.default.fileExists(atPath: sourcePath) else {
     fputs("preview source does not exist: \(sourcePath)\n", stderr)
     exit(EXIT_FAILURE)
@@ -473,7 +644,7 @@ let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 let terminal = terminalApplication(frontmost: NSWorkspace.shared.frontmostApplication)
 let target = splitTarget(terminal: terminal, trusted: AXIsProcessTrusted())
-let session = PreviewSession(url: URL(fileURLWithPath: htmlPath), sourcePath: sourcePath, statePath: statePath, terminal: terminal, target: target)
+let session = PreviewSession(url: URL(fileURLWithPath: htmlPath), sourcePath: sourcePath, statePath: statePath, clickPath: clickPath, server: server, nvim: nvim, terminal: terminal, target: target)
 session.installTerminationHandler()
 writeState(pid: getpid(), terminalPID: terminal?.processIdentifier ?? terminalPID, status: "initialized", to: statePath)
 app.activate(ignoringOtherApps: true)

@@ -21,6 +21,7 @@
     p { margin: 0 0 1em; }
     .display { margin: 1.3em 0; overflow-x: auto; text-align: center; }
     .error { color: #a33; white-space: pre-wrap; }
+    [data-source-start] { scroll-margin-block: 42vh; }
     @media (max-width: 600px) { body { padding: 28px 22px 60px; } }
   </style>
 </head>
@@ -33,37 +34,53 @@
     })[char]);
 
     function render() {
-      let text = source
-        .replace(/\\documentclass(?:\[[^\]]*\])?\{[^}]*\}/g, '')
-        .replace(/\\usepackage(?:\[[^\]]*\])?\{[^}]*\}/g, '')
-        .replace(/\\(?:title|author|date)\{[^}]*\}/g, '')
-        .replace(/\\texttt\{([^{}]*)\}/g, '$1')
-        .replace(/\\begin\{document\}|\\end\{document\}/g, '')
-        .trim();
+      const lines = source.split('\n');
       const blocks = [];
-      text = text.replace(/\\\[([\s\S]*?)\\\]/g, (_, math) => {
-        blocks.push({ display: true, value: math.trim() });
-        return `\n\n@@MATH${blocks.length - 1}@@\n\n`;
-      });
-      text = text.replace(/\\section\{([^{}]*)\}/g, (_, title) => `\n\n@@SECTION:${title}@@\n\n`)
-        .replace(/\\subsection\{([^{}]*)\}/g, (_, title) => `\n\n@@SUBSECTION:${title}@@\n\n`);
-      const chunks = text.split(/\n\s*\n/).map(part => part.trim()).filter(Boolean);
-      const html = chunks.map(part => {
-        const section = part.match(/^@@SECTION:(.*)@@$/s);
-        if (section) return `<h1>${escapeHtml(section[1])}</h1>`;
-        const subsection = part.match(/^@@SUBSECTION:(.*)@@$/s);
-        if (subsection) return `<h2>${escapeHtml(subsection[1])}</h2>`;
-        const block = part.match(/^@@MATH(\d+)@@$/);
-        if (block) {
-          const math = blocks[Number(block[1])].value;
+      let current = null;
+      let inDocument = false;
+      const flush = () => {
+        if (current && current.value.trim()) blocks.push(current);
+        current = null;
+      };
+      for (let index = 0; index < lines.length; index++) {
+        const line = lines[index];
+        if (/\\begin\{document\}/.test(line)) { inDocument = true; continue; }
+        if (/\\end\{document\}/.test(line)) { flush(); break; }
+        if (!inDocument && /^\s*\\(?:documentclass|usepackage|title|author|date)\b/.test(line)) continue;
+        const heading = line.match(/^\s*\\(section|subsection)\{([^{}]*)\}/);
+        if (heading) {
+          flush();
+          blocks.push({ kind: heading[1], value: heading[2], start: index + 1, end: index + 1 });
+          continue;
+        }
+        if (/\\\[/.test(line)) {
+          flush();
+          let value = line.replace(/^.*?\\\[/, '');
+          let end = index + 1;
+          while (!/\\\]/.test(value) && end < lines.length) value += '\n' + lines[end++];
+          value = value.replace(/\\\].*$/, '').trim();
+          blocks.push({ kind: 'math', value, start: index + 1, end });
+          index = end - 1;
+          continue;
+        }
+        if (!line.trim()) { flush(); continue; }
+        if (!current) current = { kind: 'paragraph', value: line, start: index + 1, end: index + 1 };
+        else { current.value += '\n' + line; current.end = index + 1; }
+      }
+      flush();
+      const html = blocks.map(block => {
+        const attr = `data-source-start="${block.start}" data-source-end="${block.end}"`;
+        if (block.kind === 'section') return `<h1 ${attr}>${escapeHtml(block.value)}</h1>`;
+        if (block.kind === 'subsection') return `<h2 ${attr}>${escapeHtml(block.value)}</h2>`;
+        if (block.kind === 'math') {
           try {
-            return `<div class="display">${katex.renderToString(math, { displayMode: true, throwOnError: false, strict: "ignore" })}</div>`;
+            return `<div class="display" ${attr}>${katex.renderToString(block.value, { displayMode: true, throwOnError: false, strict: "ignore" })}</div>`;
           } catch (_) {
-            return `<div class="display error">${escapeHtml(math)}</div>`;
+            return `<div class="display error" ${attr}>${escapeHtml(block.value)}</div>`;
           }
         }
         const inline = [];
-        let paragraph = part.replace(/\$([^$\n]+)\$/g, (_, math) => {
+        let paragraph = block.value.replace(/\\texttt\{([^{}]*)\}/g, '$1').replace(/\$([^$\n]+)\$/g, (_, math) => {
           inline.push(math);
           return `@@INLINE${inline.length - 1}@@`;
         });
@@ -73,10 +90,25 @@
           try { return katex.renderToString(math, { throwOnError: false, strict: "ignore" }); }
           catch (_) { return `<span class="error">${escapeHtml(`$${math}$`)}</span>`; }
         });
-        return `<p>${paragraph}</p>`;
+        return `<p ${attr}>${paragraph}</p>`;
       }).join('\n');
       document.getElementById('document').innerHTML = html;
+      document.querySelectorAll('[data-source-start]').forEach(element => {
+        element.addEventListener('click', () => {
+          const start = element.dataset.sourceStart;
+          const end = element.dataset.sourceEnd;
+          window.location.href = `draft://clicked?start=${start}&end=${end}`;
+        });
+      });
     }
+
+    window.sourceToPreview = function(start, end) {
+      const blocks = [...document.querySelectorAll('[data-source-start]')];
+      if (!blocks.length) return;
+      const block = blocks.find(element => Number(element.dataset.sourceStart) <= end && Number(element.dataset.sourceEnd) >= start)
+        || blocks.reduce((nearest, element) => Math.abs(Number(element.dataset.sourceStart) - start) < Math.abs(Number(nearest.dataset.sourceStart) - start) ? element : nearest, blocks[0]);
+      block.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    };
 
     window.updateSource = function(nextSource) {
       const x = window.scrollX;
