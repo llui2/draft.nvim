@@ -127,7 +127,7 @@ Current state
 
 Ctrl-G synchronizes source cursor or Visual selection to Preview and Preview reading position or browser selection to Neovim. The divider arrows call the same synchronization paths. :Ds, :DraftSync, and :DraftNote are removed.
 
-The preview has a subtle left-margin reading mark. j/k move it through rendered lines, Ctrl-d/Ctrl-u scroll half a viewport and update it, and gg/G go to the ends. Mouse scrolling and clicks update its position. The vertical scrollbar is hidden without disabling scrolling.
+The preview has a subtle left-margin reading mark fixed at one quarter of the viewport height. j/k move the document through that reading line; Ctrl-d/Ctrl-u scroll half a viewport and gg/G go to the ends. Extra top and bottom whitespace let short documents scroll through the mark. The fast renderer handles equation, align, gather, and multline display environments along with bracketed display math. The vertical scrollbar is hidden without disabling scrolling.
 
 The native window has a nontransparent titlebar and places the WebView below it. The native light/dark titlebar toggle remains. The companion window has red close, without minimize or zoom. The divider control is a nonactivating child panel at normal level.
 
@@ -136,8 +136,8 @@ A clean preview shows no diagnostics chrome. The conditional problem dot reports
 Open problems
 
 - Cmd-Tab coupling is unresolved. The workspace state machine checks the foreground app and exact AX focused terminal window, but repeated Terminal/Safari/Terminal and Terminal A/B/A cycles have not been observed live after this pass. Terminal can still return without Draft above it; investigate event ordering and window ordering with live instrumentation rather than adding delays.
-- Divider arrow focus, visibility, z-order, and smooth movement need live observation during focus changes and divider dragging. Their code paths are shared with Ctrl-G, and the child panel is nonactivating, but the interaction has not been verified in the real workspace.
-- The reading mark and source/render correspondence need live tests for wrapped lines, UTF-8, inline commands, math, Visual and multiline selections, and browser mouse selection. Static checks do not establish visual precision.
+- Divider arrow focus, visibility, z-order, and smooth movement need live observation during focus changes and divider dragging. Their code paths are shared with Ctrl-G, and the child panel is nonactivating, but the interaction has not been verified in the real workspace. Draft remains a separate native window, so its ordering relative to Terminal still depends on macOS app/window activation events.
+- Source/render correspondence still needs live tests for wrapped lines, UTF-8, inline commands, math, Visual and multiline selections, and browser mouse selection. Static checks do not establish visual precision.
 - Titlebar opacity, theme appearance, and hidden scrollbar need live visual verification in both appearances while scrolling.
 
 Current problems

@@ -32,7 +32,7 @@
     body {
       max-width: 760px;
       margin: 0 auto;
-      padding: 72px 48px 96px;
+      padding: max(48px, calc(25vh - 24px)) 48px 75vh;
       color: var(--foreground);
       background: var(--background);
       font: 17px/1.72 Georgia, "Times New Roman", serif;
@@ -53,8 +53,8 @@
     [data-source-start] { scroll-margin-block: 42vh; }
     ::highlight(draft-sync) { background: var(--sync-fill); text-decoration: underline; text-decoration-color: var(--sync-line); }
     .sync-target { background: var(--sync-fill); }
-    #reading-mark { position: fixed; z-index: 5; width: 3px; height: 18px; border-radius: 2px; background: var(--sync-line); pointer-events: none; opacity: .7; display: none; }
-    @media (max-width: 600px) { body { padding: 72px 22px 60px; } }
+    #reading-mark { position: fixed; z-index: 5; top: 25vh; width: 3px; height: 18px; border-radius: 2px; background: var(--sync-line); pointer-events: none; opacity: .7; display: none; }
+    @media (max-width: 600px) { body { padding: max(48px, calc(25vh - 24px)) 22px 75vh; } }
   </style>
 </head>
 <body>
@@ -147,12 +147,17 @@
             endOffset: lineOffsets[index] + new TextEncoder().encode(line.slice(0, content + heading[2].length)).length });
           continue;
         }
-        if (/\\\[/.test(line)) {
+        const displayEnvironment = line.match(/^\s*\\begin\{(equation\*?|align\*?|gather\*?|multline\*?)\}/);
+        if (/\\\[/.test(line) || displayEnvironment) {
           flush();
-          let value = line.replace(/^.*?\\\[/, '');
+          const environment = displayEnvironment && displayEnvironment[1];
+          let value = displayEnvironment
+            ? line.replace(/^.*?\\begin\{[^}]+\}/, '')
+            : line.replace(/^.*?\\\[/, '');
           let end = index + 1;
-          while (!/\\\]/.test(value) && end < lines.length) value += '\n' + lines[end++];
-          value = value.replace(/\\\].*$/, '').trim();
+          const closing = environment ? new RegExp(`\\\\end\\{${environment.replace('*', '\\*')}\\}`) : /\\\]/;
+          while (!closing.test(value) && end < lines.length) value += '\n' + lines[end++];
+          value = value.replace(environment ? new RegExp(`\\\\end\\{${environment.replace('*', '\\*')}\\}.*$`) : /\\\].*$/, '').trim();
           blocks.push({ kind: 'math', value, start: index + 1, end,
             startOffset: lineOffsets[index], endOffset: lineOffsets[Math.min(end - 1, lines.length - 1)] + new TextEncoder().encode(lines[Math.min(end - 1, lines.length - 1)]).length });
           index = end - 1;
@@ -364,7 +369,7 @@
     });
 
     let clickedAnchor = null;
-    let readingY = innerHeight / 2;
+    let readingY = innerHeight * .25;
     let readingAnchor = null;
     let pendingG = false;
     function readingAt(y) {
@@ -392,23 +397,19 @@
       return { element: chosen, y: lineY, offset };
     }
     function updateReadingMark() {
+      readingY = innerHeight * .25;
       const mark = document.getElementById('reading-mark');
       const current = readingAt(readingY);
       if (!current) { mark.style.display = 'none'; readingAnchor = null; return; }
       readingAnchor = current;
       const block = readingAnchor.element.closest('[data-source-start]') || readingAnchor.element;
       mark.style.left = `${Math.max(8, block.getBoundingClientRect().left - 16)}px`;
-      mark.style.top = `${Math.max(74, Math.min(innerHeight - 18, current.y))}px`;
+      mark.style.top = `${readingY}px`;
       mark.style.display = 'block';
     }
     function moveReading(lines) {
-      readingY = Math.max(76, Math.min(innerHeight - 20, readingY + lines * lineHeight()));
-      const current = readingAt(readingY);
-      if (current && current.y >= innerHeight - 35 && lines > 0 || current && current.y <= 85 && lines < 0) {
-        window.scrollBy({ top: lines * lineHeight(), behavior: 'instant' });
-        readingY = Math.max(76, Math.min(innerHeight - 20, readingY - lines * lineHeight()));
-      }
-      updateReadingMark();
+      window.scrollBy({ top: lines * lineHeight(), behavior: 'smooth' });
+      requestAnimationFrame(updateReadingMark);
     }
     function centerAnchor() {
       const center = window.innerHeight / 2;
@@ -427,7 +428,6 @@
     window.addEventListener('resize', updateReadingMark);
     document.getElementById('document').addEventListener('click', event => {
       clickedAnchor = event.target.closest('[data-map-start][data-map-end]');
-      readingY = event.clientY;
       updateReadingMark();
     });
     function selectionAnchor() {
@@ -466,14 +466,14 @@
       if (pendingWindow && event.key !== 'h') pendingWindow = false;
       if (pendingG && event.key !== 'g') pendingG = false;
       const key = event.key;
-      if (event.ctrlKey && key.toLowerCase() === 'd') { window.scrollBy({ top: innerHeight * .5, behavior: 'smooth' }); updateReadingMark(); }
-      else if (event.ctrlKey && key.toLowerCase() === 'u') { window.scrollBy({ top: -innerHeight * .5, behavior: 'smooth' }); updateReadingMark(); }
+      if (event.ctrlKey && key.toLowerCase() === 'd') { window.scrollBy({ top: innerHeight * .5, behavior: 'smooth' }); requestAnimationFrame(updateReadingMark); }
+      else if (event.ctrlKey && key.toLowerCase() === 'u') { window.scrollBy({ top: -innerHeight * .5, behavior: 'smooth' }); requestAnimationFrame(updateReadingMark); }
       else if (event.ctrlKey && key.toLowerCase() === 'w') { pendingG = false; pendingWindow = true; event.preventDefault(); return; }
       else if (key === 'h' && pendingWindow) { pendingWindow = false; window.location.href = 'draft://focus-source'; }
       else if (!event.ctrlKey && key === 'j') moveReading(1);
       else if (!event.ctrlKey && key === 'k') moveReading(-1);
-      else if (!event.ctrlKey && key === 'g') { if (pendingG) { window.scrollTo({ top: 0, behavior: 'smooth' }); readingY = 76; requestAnimationFrame(updateReadingMark); pendingG = false; } else pendingG = true; }
-      else if (!event.ctrlKey && key === 'G') { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }); readingY = innerHeight - 24; requestAnimationFrame(updateReadingMark); }
+      else if (!event.ctrlKey && key === 'g') { if (pendingG) { window.scrollTo({ top: 0, behavior: 'smooth' }); requestAnimationFrame(updateReadingMark); pendingG = false; } else pendingG = true; }
+      else if (!event.ctrlKey && key === 'G') { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }); requestAnimationFrame(updateReadingMark); }
       else if (event.ctrlKey && key.toLowerCase() === 'g') window.location.href = 'draft://sync';
       else return;
       event.preventDefault();

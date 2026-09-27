@@ -628,7 +628,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         }
         guard !targetTerminalIsMinimized() else { transition(to: .terminalMinimized); return }
         let terminalOwnsFocusedWindow = foregroundPID == target.app.processIdentifier && targetTerminalIsFocused()
-        let draftOwnsForeground = foregroundPID == ProcessInfo.processInfo.processIdentifier && targetTerminalIsFocused()
+        let draftOwnsForeground = foregroundPID == ProcessInfo.processInfo.processIdentifier
         transition(to: terminalOwnsFocusedWindow || draftOwnsForeground ? .pairedActive : .unrelatedAppActive, returningToPair: returningToPair)
     }
 
