@@ -1,69 +1,61 @@
 *draft* Draft: a rendered companion for Neovim
 
-Draft keeps Neovim as the editor. It previews LaTeX source in a macOS WebView.
-The live preview covers common prose, headings, and inline/display math; the
-built PDF is authoritative for manuscripts.
+Draft keeps Neovim as the editor. It previews LaTeX in a native macOS window.
+The fast preview covers common prose, headings, and inline/display math. A
+built PDF is authoritative for a manuscript.
 
 *draft-commands*
 
-:Dp  :DraftPreview  :Draft   Toggle the manuscript preview for draft/main.tex.
+:Dp  :DraftPreview  :Draft   Toggle preview of the current .tex file.
 :Db  :DraftBuild            Build draft/main.tex with latexmk.
-:DraftNote                 Toggle a lightweight .tex fragment preview.
+
+Open any .tex file and run :Dp. A draft/main.tex source participates in the
+manuscript workflow. Other .tex files can be fragments without a preamble or
+PDF build. :Db only builds a file named draft/main.tex. Saving that file
+starts a background build. An explicit :Db reports success or a concise
+failure in Neovim; successful save builds stay quiet.
 
 *draft-preview*
 
-Open project/draft/main.tex and run :Dp. Draft uses a 55/45 terminal/preview
-layout when Accessibility can identify and resize the current terminal window.
-Dragging the shared divider changes the split. Closing the preview restores
-its prior terminal geometry. The preview updates while editing. Saving
-main.tex starts a background PDF build into draft/main.pdf.
-The native moon/sun titlebar control switches the rendered surface between
-light and dark appearances. Draft remembers the choice across sessions.
-No problem dot means the fast preview is healthy. A yellow dot means Draft
-encountered unsupported or questionable preview syntax; this need not mean
-invalid LaTeX. A red dot means a rendering failure. Hover or click the dot
-for details, then click a problem to jump to its source. Future TeX/LSP
-diagnostics may use this surface; they are not currently supplied.
+With Accessibility access, Draft arranges the exact paired terminal and
+preview in a 55/45 layout. The shared divider changes the split. Closing
+Draft restores prior terminal geometry. The moon/sun titlebar button switches
+between remembered light and dark appearances. The red close button is
+available; minimize and zoom are disabled. The preview scrollbar is hidden,
+but mouse and keyboard scrolling remain available.
+
+A small dot appears only for preview problems. Yellow means unsupported or
+questionable fast-renderer syntax; red means a rendering failure. Click it
+for details and source jumps. These are not TeX/LSP diagnostics.
 
 *draft-prose*
 
-A buffer explicitly previewed by Draft uses wrap, linebreak, breakindent and
+An explicitly previewed buffer uses wrap, linebreak, breakindent, and
 textwidth=0. In Normal mode, j/k follow visual lines without a count; 5j/5k
-retain logical-line motion. Existing user mappings for j/k take precedence.
-Other buffers are unaffected.
-
-*draft-notes*
-
-Open a .tex note and run :DraftNote. Write ordinary LaTeX such as \section{},
-$...$ and \[...\] without a document preamble or PDF build. This is a fast
-preview of a LaTeX subset, not a TeX engine.
+retain logical-line motion. Existing mappings take precedence.
 
 *draft-navigation*
 
-<C-g>                   Sync the other side to the current position or selection.
-:Ds  :DraftSync        Source-to-preview aliases for <C-g>.
-:DraftFocus            Focus the preview window.
-:DraftFocusSource      Focus the paired terminal window.
+<C-g>                   Synchronize the other surface to this position.
+:DraftFocus             Focus the preview.
+:DraftFocusSource       Focus the paired terminal.
 
-<Plug>(draft-sync)          Normal and Visual mode source sync.
-<Plug>(draft-focus-preview) Focus preview from Normal mode.
-<Plug>(draft-focus-source)  Focus the paired terminal from Normal mode.
+<Plug>(draft-sync)          Normal/Visual source synchronization.
+<Plug>(draft-focus-preview) Focus Draft from Normal mode.
+<Plug>(draft-focus-source)  Focus source from Normal mode.
 
-Draft installs buffer-local Normal and Visual <C-g> mappings only while the
-buffer participates in an active preview and only if no explicit mapping
-would be overwritten. Other buffers retain Neovim's usual <C-g> behavior.
+Draft installs buffer-local Normal and Visual <C-g> mappings for an active
+preview if they do not overwrite explicit mappings. Neovim's usual <C-g>
+behavior remains in other buffers. Source cursor or Visual selection maps to
+the smallest rendered range available. The divider arrows use the same
+operations.
 
-The Neovim cursor or Visual selection maps to the preview. In the preview,
-the browser text selection or reading anchor maps to source. The reading
-anchor is the selected text, last clicked mapped element, or nearest mapped
-element to viewport center. Scrolling updates it. The divider arrows call
-these same sync operations. Preview selection sync selects source; an anchor
-without selection jumps to source. Clicked content sets the anchor.
-
-<C-w>l in Neovim focuses Draft while an active preview is paired. Otherwise
-it keeps ordinary right-window movement. <C-w>h in Draft focuses the exact
-paired terminal. Press <C-g> in Draft to sync its reading anchor to source.
-Draft's preview accepts j/k for roughly one rendered line,
-<C-d>/<C-u> for half a viewport, gg for top, and G for bottom.
+The preview has a subtle mark in the left margin for its reading position.
+j/k move it by rendered lines; <C-d>/<C-u> scroll half a viewport and update
+it; gg/G move to the ends. Mouse scrolling also updates it. Press <C-g> in
+the preview to jump to the mapped source position. An actual browser text
+selection takes priority and selects the corresponding source range. Clicked
+content sets the reading position. <C-w>h focuses the exact paired terminal;
+<C-w>l from Neovim focuses Draft.
 
 vim:tw=78:ts=8:noet:ft=help:

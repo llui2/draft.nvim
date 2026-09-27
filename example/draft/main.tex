@@ -12,11 +12,15 @@ in this sentence and press \texttt{Ctrl-G}; the preview moves here. Select
 a word or several lines in Visual mode and sync again to inspect the mapped
 range with \texttt{Ctrl-G}. Use \texttt{Ctrl-w l} to focus Draft.
 
-In Draft, \texttt{j} and \texttt{k} scroll a little, \texttt{Ctrl-d} and
-\texttt{Ctrl-u} scroll half a page, and \texttt{gg} and \texttt{G} reach
-the ends. Click a passage or select real text, then press \texttt{Ctrl-G}
-to sync Neovim. Press \texttt{Ctrl-w h} to return. The inline identity
-$e^{i\pi} = -1$ tests math correspondence.
+In Draft, a small mark at the left of the text shows the reading position.
+\texttt{j} and \texttt{k} move it through rendered lines; \texttt{Ctrl-d}
+and \texttt{Ctrl-u} move about half a page; \texttt{gg} and \texttt{G}
+reach the ends. Press \texttt{Ctrl-G} to send this position to Neovim.
+A browser text selection takes priority and selects the matching source.
+Click a passage to set the reading position, then press \texttt{Ctrl-w h}
+to return. The inline identity $e^{i\pi} = -1$ tests math correspondence.
+The commands \texttt{code-like text} and \text{rendered words} test precise
+inline synchronization.
 
 \subsection{A few equations}
 
@@ -30,8 +34,8 @@ For positive integers, the sum of the first $n$ integers is
   \sum_{k=1}^{n} k = \frac{n(n+1)}{2}.
 \]
 
-Use \texttt{:Db} to build the PDF, \texttt{:DraftNote} on a separate .tex
-fragment for a fast note preview, and \texttt{:help draft} for concise help.
+Use \texttt{:Db} to build the PDF, or open any other .tex fragment and run
+\texttt{:Dp} for a lightweight preview. Use \texttt{:help draft} for help.
 An unsupported prose command in the fast preview shows a small warning dot;
 it does not by itself mean the LaTeX source is invalid.
 

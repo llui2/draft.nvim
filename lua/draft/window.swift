@@ -296,10 +296,10 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         let frame = NSRect(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2, width: size.width, height: size.height)
         let webView = WKWebView(frame: .zero)
         self.webView = webView
-        window = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
         window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
+        window.titlebarAppearsTransparent = false
         window.isMovable = target == nil
         window.collectionBehavior = [.moveToActiveSpace]
         window.minSize = NSSize(width: min(240, visible.width * 0.20), height: min(240, visible.height))
@@ -501,7 +501,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
     private func showDividerControl() {
         guard layoutReady, window.isVisible, !window.isMiniaturized else { return }
-        dividerControl.level = .floating
+        dividerControl.level = .normal
         if !dividerControl.isVisible { dividerControl.orderFront(nil) }
     }
 

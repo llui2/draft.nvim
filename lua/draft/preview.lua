@@ -1,4 +1,3 @@
-local project = require("draft.project")
 local M = {}
 local preview = { generation = 0, closing_pid = nil, reopen_after_close = false }
 local close_preview, open_preview_window
@@ -161,9 +160,25 @@ local function wait_for_external_close(pid, deadline)
   end, 50)
 end
 
-function M.toggle(note)
+function M.toggle()
   if preview.starting then
     close_preview()
+    return
+  end
+  local source_name = vim.api.nvim_buf_get_name(0)
+  if source_name == "" or not source_name:match("%.tex$") then
+    vim.notify("Draft: open a .tex file first", vim.log.levels.ERROR)
+    return
+  end
+  if preview.pid and helper_alive(preview.pid) and preview.buffer ~= vim.api.nvim_get_current_buf() then
+    local old_pid = preview.pid
+    preview.closing_pid = old_pid
+    preview.reopen_after_close = true
+    preview.pid = nil
+    cleanup_watch()
+    remove_keys()
+    pcall(vim.uv.kill, old_pid, "sigterm")
+    wait_for_external_close(old_pid, vim.uv.hrtime() + 3000000000)
     return
   end
   if preview.pid and helper_alive(preview.pid) then
@@ -191,21 +206,8 @@ function M.toggle(note)
     preview.reopen_after_close = false
   end
 
-  local source_name = vim.api.nvim_buf_get_name(0)
-  local draft_dir
-  if note then
-    if source_name == "" or not source_name:match("%.tex$") then
-      vim.notify("draft.nvim: open a .tex note first", vim.log.levels.ERROR)
-      return
-    end
-  else
-    draft_dir = project.draft_dir()
-    if not draft_dir then return end
-    if vim.fs.basename(source_name) ~= "main.tex" or vim.fs.dirname(source_name) ~= draft_dir then
-      vim.notify("draft.nvim: open draft/main.tex to preview it", vim.log.levels.ERROR)
-      return
-    end
-  end
+  local draft_dir = vim.fs.basename(source_name) == "main.tex" and vim.fs.basename(vim.fs.dirname(source_name)) == "draft"
+    and vim.fs.dirname(source_name) or nil
 
   local runtime = vim.api.nvim_get_runtime_file("lua/draft/preview.html", false)[1]
   local window_script = vim.api.nvim_get_runtime_file("lua/draft/window.swift", false)[1]
@@ -214,8 +216,8 @@ function M.toggle(note)
     return
   end
 
-  local state_dir = note and vim.fs.joinpath(vim.fn.stdpath("cache"), "draft.nvim")
-    or vim.fs.joinpath(draft_dir, ".build")
+  local state_dir = draft_dir and vim.fs.joinpath(draft_dir, ".build")
+    or vim.fs.joinpath(vim.fn.stdpath("cache"), "draft.nvim")
   vim.fn.mkdir(state_dir, "p")
   local session = tostring(vim.fn.getpid())
   preview.source = vim.fs.joinpath(state_dir, "preview-source-" .. session .. ".json")
