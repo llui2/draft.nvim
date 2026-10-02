@@ -53,7 +53,7 @@
     [data-source-start] { scroll-margin-block: 42vh; }
     ::highlight(draft-sync) { background: var(--sync-fill); text-decoration: underline; text-decoration-color: var(--sync-line); }
     .sync-target { background: var(--sync-fill); }
-    #reading-mark { position: fixed; z-index: 5; top: 25vh; width: 3px; height: 18px; border-radius: 2px; background: var(--sync-line); pointer-events: none; opacity: .7; display: none; }
+    #reading-mark { position: fixed; z-index: 5; top: 25vh; left: 8px; width: 3px; height: 18px; border-radius: 2px; background: var(--sync-line); pointer-events: none; opacity: .7; display: none; }
     @media (max-width: 600px) { body { padding: max(48px, calc(25vh - 24px)) 22px 75vh; } }
   </style>
 </head>
@@ -421,7 +421,6 @@
       if (!current) { mark.style.display = 'none'; delete mark.dataset.sourceOffset; readingAnchor = null; return; }
       readingAnchor = current;
       mark.dataset.sourceOffset = current.offset;
-      mark.style.left = `${Math.max(8, document.getElementById('document').getBoundingClientRect().left - 16)}px`;
       mark.style.display = 'block';
     }
     function moveReading(lines) {

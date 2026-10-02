@@ -43,7 +43,10 @@ const browserChecks = String.raw`
   const fixture = FIXTURE;
   const byteAt = text => byteLength(fixture.slice(0, fixture.indexOf(text)));
   const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
-  const markerIsFixed = () => Math.abs(document.getElementById('reading-mark').getBoundingClientRect().top - innerHeight * .25) < 1;
+  const markerIsFixed = () => {
+    const rect = document.getElementById('reading-mark').getBoundingClientRect();
+    return Math.abs(rect.top - innerHeight * .25) < 1 && rect.left === 8;
+  };
   window.addEventListener('load', async () => {
     const status = document.createElement('pre');
     status.id = 'test-results';
@@ -89,6 +92,11 @@ const browserChecks = String.raw`
       await frame();
       check(readingAnchor?.element.closest('h1'), 'gg first mapped position');
       check(markerIsFixed(), 'fixed marker after gg');
+      document.getElementById('document').style.marginLeft = '70px';
+      updateReadingMark();
+      check(markerIsFixed(), 'marker independent of document position');
+      document.getElementById('document').style.marginLeft = '';
+      updateReadingMark();
       const startOffset = readingAnchor.offset;
       window.scrollBy({top: lineHeight(), behavior: 'instant'});
       await frame(); updateReadingMark();
