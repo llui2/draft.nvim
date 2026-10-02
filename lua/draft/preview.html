@@ -316,9 +316,18 @@
       const contains = el => endPoint
         ? Number(el.dataset.mapStart) < offset && offset <= Number(el.dataset.mapEnd)
         : Number(el.dataset.mapStart) <= offset && offset < Number(el.dataset.mapEnd);
-      const spans = [...document.querySelectorAll('span[data-map-start][data-map-end]')].filter(el => !el.dataset.math);
+      // Command wrappers include invisible source syntax; only their mapped text
+      // children have a one-to-one byte correspondence with rendered text.
+      const spans = [...document.querySelectorAll('span[data-map-start][data-map-end]')].filter(el => !el.dataset.math && !el.dataset.inlineCommand);
       const span = spans.find(contains);
       if (!span) {
+        const command = [...document.querySelectorAll('[data-inline-command]')].find(contains);
+        const inner = command?.querySelector('span[data-map-start]');
+        if (inner) {
+          const first = Number(inner.dataset.mapStart), last = Number(inner.dataset.mapEnd);
+          if (offset <= first) return pointAt(first);
+          if (offset >= last) return pointAt(last, true);
+        }
         const math = [...document.querySelectorAll('[data-math="true"]')].find(contains);
         if (!math || !math.parentNode) return null;
         const index = [...math.parentNode.childNodes].indexOf(math);
@@ -347,19 +356,25 @@
       if (!blocks.length) return;
       let block = blocks.find(el => Number(el.dataset.mapStart) <= start && Number(el.dataset.mapEnd) >= start);
       if (!block) block = blocks.reduce((nearest, el) => Math.abs(Number(el.dataset.mapStart) - start) < Math.abs(Number(nearest.dataset.mapStart) - start) ? el : nearest, blocks[0]);
-      block.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const show = (range, fallback) => {
+        highlight(range, fallback);
+        const rect = range?.getBoundingClientRect() || fallback?.getBoundingClientRect();
+        if (rect) window.scrollBy({ top: rect.top - readingY, behavior: 'smooth' });
+      };
       if (mode === 'cursor') {
         const math = [...block.querySelectorAll('[data-math="true"]')].find(el => Number(el.dataset.mapStart) <= start && Number(el.dataset.mapEnd) >= start);
-        if (math) { highlight(null, math); return; }
-        const inline = [...block.querySelectorAll('[data-inline-command]')].find(el => Number(el.dataset.mapStart) <= start && start < Number(el.dataset.mapEnd));
+        if (math) { show(null, math); return; }
+        const inline = [...block.querySelectorAll('[data-inline-command]')]
+          .filter(el => Number(el.dataset.mapStart) <= start && start < Number(el.dataset.mapEnd))
+          .sort((a, b) => (Number(a.dataset.mapEnd) - Number(a.dataset.mapStart)) - (Number(b.dataset.mapEnd) - Number(b.dataset.mapStart)))[0];
         if (inline) {
           const inner = inline.querySelector('span[data-map-start]');
-          if (inner) { highlight(rangeFor(Number(inner.dataset.mapStart), Number(inner.dataset.mapEnd)), inner); return; }
+          if (inner) { show(rangeFor(Number(inner.dataset.mapStart), Number(inner.dataset.mapEnd)), inner); return; }
         }
       }
-      if (block.classList.contains('display')) { highlight(null, block); return; }
+      if (block.classList.contains('display')) { show(null, block); return; }
       const range = rangeFor(start, end);
-      if (range) highlight(range, block); else highlight(null, block);
+      show(range, block);
     };
 
     document.getElementById('document').addEventListener('mousedown', () => {
@@ -368,27 +383,30 @@
       syncRange = null;
     });
 
-    let clickedAnchor = null;
     let readingY = innerHeight * .25;
     let readingAnchor = null;
     let pendingG = false;
     function readingAt(y) {
       const doc = document.getElementById('document');
       const x = Math.min(innerWidth - 24, Math.max(24, doc.getBoundingClientRect().left + 30));
-      const range = document.caretRangeFromPoint?.(x, Math.max(74, Math.min(innerHeight - 18, y)));
+      let range = document.caretRangeFromPoint?.(x, Math.max(0, Math.min(innerHeight - 18, y)));
       let element = range?.startContainer?.parentElement?.closest('[data-map-start][data-map-end]');
-      if (!element || !doc.contains(element)) element = centerAnchor();
+      const visible = element?.getBoundingClientRect();
+      if (!element || !doc.contains(element) || visible.bottom < 0 || visible.top > innerHeight) {
+        element = nearestAnchor(y);
+        range = null;
+      }
       if (!element) return null;
       if (element.dataset.inlineCommand) element = element.querySelector('span[data-map-start]') || element;
       const rect = range?.getBoundingClientRect();
       const block = element.closest('[data-source-start]') || element;
       const lineY = rect && rect.height ? rect.top : element.getBoundingClientRect().top;
-      const lineRange = document.caretRangeFromPoint?.(x, Math.max(74, Math.min(innerHeight - 18, lineY + 8)));
+      const lineRange = document.caretRangeFromPoint?.(x, Math.max(0, Math.min(innerHeight - 18, lineY + 8)));
       const lineElement = lineRange?.startContainer?.parentElement?.closest('[data-map-start][data-map-end]');
       const chosen = lineElement && block.contains(lineElement) ? lineElement : element;
       const chosenRange = lineElement && block.contains(lineElement) ? lineRange : range;
       let offset = Number(chosen.dataset.mapStart);
-      if (chosenRange && chosen.contains(chosenRange.startContainer) && !chosen.dataset.math) {
+      if (chosenRange && chosen.contains(chosenRange.startContainer) && !chosen.dataset.math && !chosen.closest('.display')) {
         const prefix = document.createRange();
         prefix.selectNodeContents(chosen);
         prefix.setEnd(chosenRange.startContainer, chosenRange.startOffset);
@@ -400,34 +418,44 @@
       readingY = innerHeight * .25;
       const mark = document.getElementById('reading-mark');
       const current = readingAt(readingY);
-      if (!current) { mark.style.display = 'none'; readingAnchor = null; return; }
+      if (!current) { mark.style.display = 'none'; delete mark.dataset.sourceOffset; readingAnchor = null; return; }
       readingAnchor = current;
+      mark.dataset.sourceOffset = current.offset;
       const block = readingAnchor.element.closest('[data-source-start]') || readingAnchor.element;
       mark.style.left = `${Math.max(8, block.getBoundingClientRect().left - 16)}px`;
-      mark.style.top = `${readingY}px`;
+      mark.style.top = `${Math.max(0, Math.min(innerHeight - 18, current.y))}px`;
       mark.style.display = 'block';
     }
     function moveReading(lines) {
       window.scrollBy({ top: lines * lineHeight(), behavior: 'smooth' });
       requestAnimationFrame(updateReadingMark);
     }
-    function centerAnchor() {
-      const center = window.innerHeight / 2;
+    function nearestAnchor(y = readingY) {
       let nearest = null, distance = Infinity;
       for (const element of document.querySelectorAll('[data-map-start][data-map-end]')) {
         const rect = element.getBoundingClientRect();
         if (rect.bottom < 0 || rect.top > innerHeight) continue;
-        const gap = Math.abs((rect.top + rect.bottom) / 2 - center);
+        const gap = Math.max(rect.top - y, y - rect.bottom, 0);
         if (gap < distance || (gap === distance && nearest?.contains(element))) {
           nearest = element; distance = gap;
         }
       }
       return nearest;
     }
-    window.addEventListener('scroll', () => { clickedAnchor = null; requestAnimationFrame(updateReadingMark); }, { passive: true });
+    function jumpReading(last) {
+      const positions = [...document.querySelectorAll('[data-source-start]')];
+      const element = last ? positions.at(-1) : positions[0];
+      if (!element) return;
+      const rect = element.getBoundingClientRect();
+      const y = last ? rect.bottom - lineHeight() : rect.top;
+      window.scrollBy({ top: y - readingY, behavior: 'instant' });
+      updateReadingMark();
+    }
+    window.addEventListener('scroll', () => { requestAnimationFrame(updateReadingMark); }, { passive: true });
     window.addEventListener('resize', updateReadingMark);
     document.getElementById('document').addEventListener('click', event => {
-      clickedAnchor = event.target.closest('[data-map-start][data-map-end]');
+      if (!event.target.closest('[data-map-start][data-map-end]') || !window.getSelection().isCollapsed) return;
+      window.scrollBy({ top: event.clientY - readingY, behavior: 'instant' });
       updateReadingMark();
     });
     function selectionAnchor() {
@@ -449,11 +477,10 @@
     window.previewReadingAnchor = function() {
       const selection = selectionAnchor();
       if (selection) return selection;
-      if (!clickedAnchor?.isConnected && readingAnchor?.element?.isConnected)
+      updateReadingMark();
+      if (readingAnchor?.element?.isConnected)
         return { start: readingAnchor.offset, end: readingAnchor.offset, selection: false };
-      const element = clickedAnchor?.isConnected ? clickedAnchor : centerAnchor();
-      if (!element) return null;
-      return { start: Number(element.dataset.mapStart), end: Number(element.dataset.mapEnd), selection: false };
+      return null;
     };
     window.highlightPreviewAnchor = function(start, end) {
       const range = rangeFor(start, end);
@@ -472,8 +499,8 @@
       else if (key === 'h' && pendingWindow) { pendingWindow = false; window.location.href = 'draft://focus-source'; }
       else if (!event.ctrlKey && key === 'j') moveReading(1);
       else if (!event.ctrlKey && key === 'k') moveReading(-1);
-      else if (!event.ctrlKey && key === 'g') { if (pendingG) { window.scrollTo({ top: 0, behavior: 'smooth' }); requestAnimationFrame(updateReadingMark); pendingG = false; } else pendingG = true; }
-      else if (!event.ctrlKey && key === 'G') { window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }); requestAnimationFrame(updateReadingMark); }
+      else if (!event.ctrlKey && key === 'g') { if (pendingG) { jumpReading(false); pendingG = false; } else pendingG = true; }
+      else if (!event.ctrlKey && key === 'G') jumpReading(true);
       else if (event.ctrlKey && key.toLowerCase() === 'g') window.location.href = 'draft://sync';
       else return;
       event.preventDefault();

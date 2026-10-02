@@ -2,6 +2,15 @@ local M = {}
 local preview = { generation = 0, closing_pid = nil, reopen_after_close = false }
 local close_preview, open_preview_window
 
+local function publish_command(action)
+  local temporary = preview.command .. ".tmp"
+  local command = { action = action, visible = not preview.hidden, nonce = vim.uv.hrtime() }
+  if vim.fn.writefile({ vim.json.encode(command) }, temporary) ~= 0 then return false end
+  local renamed = vim.uv.fs_rename(temporary, preview.command)
+  if not renamed then pcall(vim.uv.fs_unlink, temporary) end
+  return renamed ~= nil
+end
+
 local function unmapped(mode, lhs, buffer)
   local local_map = vim.api.nvim_buf_call(buffer, function() return vim.fn.maparg(lhs, mode, false, true) end)
   return type(local_map) ~= "table" or vim.tbl_isempty(local_map)
@@ -186,7 +195,11 @@ function M.toggle()
       preview.hidden = false
       install_keys(preview.buffer)
       write_source(table.concat(vim.api.nvim_buf_get_lines(preview.buffer, 0, -1, false), "\n"))
-      pcall(vim.uv.kill, preview.pid, "sigusr2")
+      if not publish_command("visibility") then
+        preview.hidden = true
+        remove_keys()
+        vim.notify("Draft: could not reopen preview", vim.log.levels.ERROR)
+      end
     else
       close_preview()
     end
@@ -196,6 +209,7 @@ function M.toggle()
     preview.pid = nil
     preview.hidden = false
     cleanup_watch()
+    remove_keys()
   end
   if preview.closing_pid then
     if helper_alive(preview.closing_pid) then
@@ -268,11 +282,16 @@ close_preview = function()
   local pid = preview.pid
   if pid and helper_alive(pid) then
     preview.hidden = true
-    pcall(vim.uv.kill, pid, "sigusr1")
+    if not publish_command("visibility") then
+      preview.hidden = false
+      vim.notify("Draft: could not hide preview", vim.log.levels.ERROR)
+      return
+    end
   elseif not pid then
     cleanup_state(preview.state, preview.source)
   end
   preview.starting = false
+  cleanup_startup_watch()
   remove_keys()
   if not pid then cleanup_watch() end
   vim.notify("draft.nvim: preview hidden")
@@ -289,6 +308,13 @@ open_preview_window = function(binary, html, source, state, server, nvim, window
       end
       notified = true
       preview.starting = false
+      cleanup_startup_watch()
+      cleanup_watch()
+      remove_keys()
+      if process and helper_alive(process.pid) then
+        preview.closing_pid = process.pid
+        pcall(vim.uv.kill, process.pid, "sigterm")
+      end
       vim.notify("draft.nvim: preview helper failed\n" .. message, vim.log.levels.ERROR)
     end
 
@@ -383,8 +409,8 @@ open_preview_window = function(binary, html, source, state, server, nvim, window
       if generation ~= preview.generation then
         return
       end
-      preview.starting = false
       if result.code ~= 0 then
+        preview.starting = false
         cleanup_watch()
         remove_keys()
         cleanup_state(state, source)
@@ -399,8 +425,8 @@ open_preview_window = function(binary, html, source, state, server, nvim, window
           if generation ~= preview.generation then
             return
           end
-          preview.starting = false
           if signature.code ~= 0 then
+            preview.starting = false
             cleanup_watch()
             remove_keys()
             cleanup_state(state, source)
@@ -426,11 +452,7 @@ end
 
 function M.send(action)
   if not M.active() then return false end
-  local temporary = preview.command .. ".tmp"
-  if vim.fn.writefile({ vim.json.encode({ action = action, nonce = vim.uv.hrtime() }) }, temporary) ~= 0 then return false end
-  local renamed = vim.uv.fs_rename(temporary, preview.command)
-  if not renamed then pcall(vim.uv.fs_unlink, temporary) end
-  return renamed ~= nil
+  return publish_command(action)
 end
 
 function M.stop()

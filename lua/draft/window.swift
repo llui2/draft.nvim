@@ -3,6 +3,39 @@ import ApplicationServices
 import Darwin
 import WebKit
 
+// BEGIN pure workspace rules (also exercised without an AppKit session).
+func splitFrames(at divider: CGFloat, in workspace: NSRect) -> (terminal: NSRect, preview: NSRect) {
+    let gap: CGFloat = 2
+    let minimumDivider = workspace.minX + workspace.width * 0.40
+    let maximumDivider = workspace.maxX - workspace.width * 0.20 - gap
+    let x = min(max(divider, minimumDivider), maximumDivider)
+    return (
+        NSRect(x: workspace.minX, y: workspace.minY, width: x - workspace.minX, height: workspace.height),
+        NSRect(x: x + gap, y: workspace.minY, width: workspace.maxX - x - gap, height: workspace.height)
+    )
+}
+
+func pairedForeground(frontmost: pid_t?, terminal: pid_t, draft: pid_t, exactTerminalFocused: Bool) -> Bool {
+    frontmost == draft || (frontmost == terminal && exactTerminalFocused)
+}
+// END pure workspace rules.
+
+// Only this strip resizes the companion. The native window stays non-resizable.
+final class SplitDragView: NSView {
+    var moveDivider: ((CGFloat) -> Void)?
+    private var startX: CGFloat = 0
+    private var windowX: CGFloat = 0
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
+    override func mouseDown(with event: NSEvent) {
+        startX = NSEvent.mouseLocation.x
+        windowX = window?.frame.minX ?? startX
+    }
+    override func mouseDragged(with event: NSEvent) {
+        moveDivider?(windowX + NSEvent.mouseLocation.x - startX - 2)
+    }
+}
+
 struct PreviewState: Codable {
     let pid: Int32
     let terminalPID: pid_t?
@@ -92,8 +125,24 @@ func commandOutput(_ executable: String, _ arguments: [String]) -> String? {
     return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-func terminalApplication(frontmost: NSRunningApplication?) -> NSRunningApplication? {
+func terminalApplication(sourcePID: pid_t) -> NSRunningApplication? {
     let environment = ProcessInfo.processInfo.environment
+    // Walk the source process, rather than pairing a helper with whichever app
+    // happened to become frontmost while Swift was compiling.
+    if environment["TMUX_PANE"] == nil,
+       let table = commandOutput("/bin/ps", ["-axo", "pid=,ppid="]) {
+        var parents: [pid_t: pid_t] = [:]
+        for line in table.split(separator: "\n") {
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            if fields.count == 2, let pid = pid_t(fields[0]), let parent = pid_t(fields[1]) { parents[pid] = parent }
+        }
+        var current = sourcePID
+        for _ in 0..<32 {
+            if let app = NSRunningApplication(processIdentifier: current), app.bundleIdentifier != nil { return app }
+            guard let parent = parents[current], parent > 1, parent != current else { break }
+            current = parent
+        }
+    }
     if let pane = environment["TMUX_PANE"],
        let clientTTY = commandOutput("/usr/bin/env", ["tmux", "display-message", "-p", "-t", pane, "#{client_tty}"]),
        let table = commandOutput("/bin/ps", ["-axo", "pid=,ppid=,tty="]) {
@@ -124,8 +173,6 @@ func terminalApplication(frontmost: NSRunningApplication?) -> NSRunningApplicati
     ]
     if let program = environment["TERM_PROGRAM"], let bundleID = bundleIDs[program],
        let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) { return app }
-    if let frontmost, frontmost.bundleIdentifier != "com.apple.notificationcenterui",
-       frontmost.bundleIdentifier != "com.apple.systempreferences" { return frontmost }
     return nil
 }
 
@@ -185,7 +232,7 @@ func terminalFrame(pid: pid_t, window: AXUIElement) -> NSRect? {
         ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
             && ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
     }
-    guard let info = number.flatMap({ id in candidates.first(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == id }) }) ?? candidates.first,
+    guard let info = number.flatMap({ id in candidates.first(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == id }) }),
           let boundsValue = info[kCGWindowBounds as String],
           CFGetTypeID(boundsValue as CFTypeRef) == CFDictionaryGetTypeID() else { return nil }
     let bounds = unsafeBitCast(boundsValue as CFTypeRef, to: CFDictionary.self)
@@ -224,14 +271,27 @@ struct SplitTarget {
     let originalPosition: CGPoint
     let originalSize: CGSize
     let screen: NSScreen
+    let windowNumber: CGWindowID?
 }
 
 func splitTarget(terminal: NSRunningApplication?, trusted: Bool) -> SplitTarget? {
-    guard trusted, let terminal, let axWindow = focusedWindow(terminal),
+    guard trusted, let terminal,
+          NSWorkspace.shared.frontmostApplication?.processIdentifier == terminal.processIdentifier,
+          let axWindow = focusedWindow(terminal),
           let originalPosition = axPoint(axWindow), let originalSize = axSize(axWindow),
           let mapped = appKitFrame(forQuartzFrame: CGRect(origin: originalPosition, size: originalSize)) else { return nil }
     let screen = mapped.screen
-    return SplitTarget(app: terminal, axWindow: axWindow, originalPosition: originalPosition, originalSize: originalSize, screen: screen)
+    let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+    let matches = windows.filter { info in
+        guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == terminal.processIdentifier,
+              (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+              let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
+              let x = bounds["X"], let y = bounds["Y"], let w = bounds["Width"], let h = bounds["Height"] else { return false }
+        return abs(x - originalPosition.x) < 2 && abs(y - originalPosition.y) < 2
+            && abs(w - originalSize.width) < 2 && abs(h - originalSize.height) < 2
+    }
+    let number = matches.count == 1 ? (matches[0][kCGWindowNumber as String] as? NSNumber)?.uint32Value : nil
+    return SplitTarget(app: terminal, axWindow: axWindow, originalPosition: originalPosition, originalSize: originalSize, screen: screen, windowNumber: number)
 }
 
 final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
@@ -253,16 +313,15 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private let server: String
     private let nvim: String
     private let terminalPID: pid_t?
-    private let target: SplitTarget?
+    private var target: SplitTarget?
     private let webView: WKWebView
     private let dividerControl = DividerControl()
+    private let splitDragView = SplitDragView()
     private let appearanceButton = NSButton()
     private let appearanceAccessory = NSTitlebarAccessoryViewController()
     private var darkAppearance = false
     private var observer: AXObserver?
     private var signalSource: DispatchSourceSignal?
-    private var hideSignalSource: DispatchSourceSignal?
-    private var showSignalSource: DispatchSourceSignal?
     private var sourceWatcher: DispatchSourceFileSystemObject?
     private var activationObserver: NSObjectProtocol?
     private var deactivationObserver: NSObjectProtocol?
@@ -280,6 +339,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private var closing = false
     private var workspaceVisible = false
     private var layoutReady = false
+    private var terminalWasArranged = false
     private(set) var warning: String?
 
     init(url: URL, sourcePath: String, statePath: String, commandPath: String, server: String, nvim: String, terminal: NSRunningApplication?, target: SplitTarget?) {
@@ -301,9 +361,19 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = false
         window.isMovable = target == nil
-        window.collectionBehavior = [.moveToActiveSpace]
+        window.collectionBehavior = []
         window.minSize = NSSize(width: min(240, visible.width * 0.20), height: min(240, visible.height))
-        window.contentView = webView
+        let content = NSView()
+        window.contentView = content
+        webView.frame = content.bounds
+        webView.autoresizingMask = [.width, .height]
+        content.addSubview(webView)
+        if target != nil {
+            splitDragView.frame = NSRect(x: 0, y: 0, width: 6, height: content.bounds.height)
+            splitDragView.autoresizingMask = [.height]
+            splitDragView.moveDivider = { [weak self] x in self?.moveDivider(to: x) }
+            content.addSubview(splitDragView)
+        }
         window.delegate = self
         configureAppearance()
         window.addChildWindow(dividerControl, ordered: .above)
@@ -395,6 +465,11 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let action = object["action"] as? String else { return }
         lastCommand = raw
+        // Visibility is desired state in every atomic command. Rapid toggles
+        // cannot lose parity through coalesced or reordered UNIX signals.
+        if let visible = object["visible"] as? Bool {
+            if visible { showWorkspace() } else { hideWorkspace() }
+        }
         switch action {
         case "sync-source": navigateToSource()
         case "focus-preview": focusPreview()
@@ -472,10 +547,11 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
     private func focusSource() {
         guard let target, workspaceVisible else { return }
-        target.app.activate()
+        // Set the exact destination before activation can choose another window.
         _ = AXUIElementPerformAction(target.axWindow, kAXRaiseAction as CFString)
         _ = AXUIElementSetAttributeValue(target.axWindow, kAXMainAttribute as CFString, kCFBooleanTrue)
         _ = AXUIElementSetAttributeValue(target.axWindow, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        target.app.activate()
         refreshWorkspaceSoon()
     }
 
@@ -501,8 +577,10 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
     private func showDividerControl() {
         guard layoutReady, window.isVisible, !window.isMiniaturized else { return }
-        dividerControl.level = .normal
-        if !dividerControl.isVisible { dividerControl.orderFront(nil) }
+        // A normal-level cross-process child can end up below Terminal's newly
+        // raised window. Float only during this exact workspace's active state.
+        dividerControl.level = .floating
+        dividerControl.orderFrontRegardless()
     }
 
     private func targetTerminalIsFocused() -> Bool {
@@ -528,6 +606,12 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         return (value as? NSNumber)?.boolValue ?? terminalMinimized
     }
 
+    private func targetIsOnScreen() -> Bool {
+        guard let number = target?.windowNumber else { return true }
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return windows.contains { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == number }
+    }
+
     func start() {
         workspaceVisible = true
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -551,12 +635,15 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
             guard let refcon else { return }
             let session = Unmanaged<PreviewSession>.fromOpaque(refcon).takeUnretainedValue()
             DispatchQueue.main.async {
-                if notification as String == kAXFocusedWindowChangedNotification as String {
+                if notification as String == kAXFocusedWindowChangedNotification as String
+                    || notification as String == kAXApplicationActivatedNotification as String {
                     session.terminalFocusChanged()
                 } else if notification as String == kAXWindowMiniaturizedNotification as String {
                     session.terminalMiniaturized()
                 } else if notification as String == kAXWindowDeminiaturizedNotification as String {
                     session.terminalDeminiaturized()
+                } else if notification as String == kAXUIElementDestroyedNotification as String {
+                    session.close()
                 } else {
                     session.terminalChanged(element)
                 }
@@ -573,8 +660,10 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         let resized = AXObserverAddNotification(created, target.axWindow, kAXResizedNotification as CFString, context)
         AXObserverAddNotification(created, target.axWindow, kAXWindowMiniaturizedNotification as CFString, context)
         AXObserverAddNotification(created, target.axWindow, kAXWindowDeminiaturizedNotification as CFString, context)
+        AXObserverAddNotification(created, target.axWindow, kAXUIElementDestroyedNotification as CFString, context)
         let application = AXUIElementCreateApplication(target.app.processIdentifier)
         let focused = AXObserverAddNotification(created, application, kAXFocusedWindowChangedNotification as CFString, context)
+        AXObserverAddNotification(created, application, kAXApplicationActivatedNotification as CFString, context)
         guard moved == .success && resized == .success && focused == .success else {
             warning = "split mode unavailable: could not observe the terminal window"
             stopObserving()
@@ -627,9 +716,10 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
             return
         }
         guard !targetTerminalIsMinimized() else { transition(to: .terminalMinimized); return }
-        let terminalOwnsFocusedWindow = foregroundPID == target.app.processIdentifier && targetTerminalIsFocused()
-        let draftOwnsForeground = foregroundPID == ProcessInfo.processInfo.processIdentifier
-        transition(to: terminalOwnsFocusedWindow || draftOwnsForeground ? .pairedActive : .unrelatedAppActive, returningToPair: returningToPair)
+        guard targetIsOnScreen() else { transition(to: .unrelatedAppActive); return }
+        let paired = pairedForeground(frontmost: foregroundPID, terminal: target.app.processIdentifier,
+                                      draft: ProcessInfo.processInfo.processIdentifier, exactTerminalFocused: targetTerminalIsFocused())
+        transition(to: paired ? .pairedActive : .unrelatedAppActive, returningToPair: returningToPair)
     }
 
     private func transition(to next: WorkspaceState, returningToPair: Bool = false) {
@@ -649,8 +739,9 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
     private func terminalFocusChanged() {
         guard !closing else { return }
-        refreshWorkspaceState()
-        refreshWorkspaceSoon()
+        // AX focus may settle after NSWorkspace activation. Reorder at that
+        // event as well, even when the logical state was already pairedActive.
+        refreshWorkspaceState(returningToPair: true)
     }
 
     private func terminalMiniaturized() {
@@ -664,14 +755,14 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     }
 
     private func frames(at divider: CGFloat, in workspace: NSRect) -> (terminal: NSRect, preview: NSRect) {
-        let gap: CGFloat = 2
-        let minimumDivider = workspace.minX + workspace.width * 0.40
-        let maximumDivider = workspace.maxX - workspace.width * 0.20 - gap
-        let x = min(max(divider, minimumDivider), maximumDivider)
-        return (
-            NSRect(x: workspace.minX, y: workspace.minY, width: x - workspace.minX, height: workspace.height),
-            NSRect(x: x + gap, y: workspace.minY, width: workspace.maxX - x - gap, height: workspace.height)
-        )
+        splitFrames(at: divider, in: workspace)
+    }
+
+    private func moveDivider(to x: CGFloat) {
+        guard workspaceVisible, layoutReady, workspaceState == .pairedActive, let target else { return }
+        let canonical = frames(at: x, in: target.screen.visibleFrame)
+        splitX = canonical.terminal.maxX
+        _ = apply(canonical.terminal, canonical.preview)
     }
 
     @discardableResult
@@ -680,6 +771,8 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         applying = true
         terminalExpected = terminalFrame
         previewExpected = previewFrame
+        // Even a partly rejected AX write can change geometry and needs undoing.
+        terminalWasArranged = true
         let success = setAXFrame(terminalFrame, window: target.axWindow, screen: target.screen)
         window.setFrame(previewFrame, display: true)
         positionDividerControl(in: target.screen.visibleFrame)
@@ -694,7 +787,8 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
     private func terminalChanged(_ element: AXUIElement) {
         guard !closing, workspaceVisible, !applying, layoutReady, let target,
-              let actual = terminalFrame(pid: target.app.processIdentifier, window: element),
+              CFEqual(element, target.axWindow),
+              let actual = terminalFrame(pid: target.app.processIdentifier, window: target.axWindow),
               let expected = terminalExpected else { return }
         if same(actual, expected) { return }
         let dividerDrag = abs(actual.minX - expected.minX) < 3
@@ -745,19 +839,22 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         AXObserverRemoveNotification(observer, target.axWindow, kAXResizedNotification as CFString)
         AXObserverRemoveNotification(observer, target.axWindow, kAXWindowMiniaturizedNotification as CFString)
         AXObserverRemoveNotification(observer, target.axWindow, kAXWindowDeminiaturizedNotification as CFString)
+        AXObserverRemoveNotification(observer, target.axWindow, kAXUIElementDestroyedNotification as CFString)
         AXObserverRemoveNotification(observer, AXUIElementCreateApplication(target.app.processIdentifier), kAXFocusedWindowChangedNotification as CFString)
+        AXObserverRemoveNotification(observer, AXUIElementCreateApplication(target.app.processIdentifier), kAXApplicationActivatedNotification as CFString)
         CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
         self.observer = nil
     }
 
     private func restoreTerminal() {
-        guard let target else { return }
+        guard terminalWasArranged, let target else { return }
         var point = target.originalPosition
         var size = target.originalSize
         if let position = AXValueCreate(.cgPoint, &point), let dimensions = AXValueCreate(.cgSize, &size) {
             AXUIElementSetAttributeValue(target.axWindow, kAXSizeAttribute as CFString, dimensions)
             AXUIElementSetAttributeValue(target.axWindow, kAXPositionAttribute as CFString, position)
         }
+        terminalWasArranged = false
     }
 
     func close() {
@@ -765,10 +862,6 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         closing = true
         signalSource?.cancel()
         signalSource = nil
-        hideSignalSource?.cancel()
-        hideSignalSource = nil
-        showSignalSource?.cancel()
-        showSignalSource = nil
         if let activationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
             self.activationObserver = nil
@@ -805,16 +898,6 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         source.setEventHandler { [weak self] in self?.close() }
         source.resume()
         signalSource = source
-        Darwin.signal(SIGUSR1, SIG_IGN)
-        let hideSource = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
-        hideSource.setEventHandler { [weak self] in self?.hideWorkspace() }
-        hideSource.resume()
-        hideSignalSource = hideSource
-        Darwin.signal(SIGUSR2, SIG_IGN)
-        let showSource = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
-        showSource.setEventHandler { [weak self] in self?.showWorkspace() }
-        showSource.resume()
-        showSignalSource = showSource
     }
 
     func hideWorkspace() {
@@ -832,9 +915,16 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     func showWorkspace() {
         guard !closing, !workspaceVisible else { return }
         if let target {
-            let arranged = frames(at: splitX, in: target.screen.visibleFrame)
-            guard apply(arranged.terminal, arranged.preview) else { return }
-            positionDividerControl(in: target.screen.visibleFrame)
+            // Hidden mode releases Terminal. Reopening saves its current frame
+            // and screen, while retaining the same AX window identity.
+            guard let position = axPoint(target.axWindow), let size = axSize(target.axWindow),
+                  let mapped = appKitFrame(forQuartzFrame: CGRect(origin: position, size: size)) else { return }
+            self.target = SplitTarget(app: target.app, axWindow: target.axWindow, originalPosition: position,
+                                      originalSize: size, screen: mapped.screen, windowNumber: target.windowNumber)
+            splitX = mapped.screen.visibleFrame.minX + mapped.screen.visibleFrame.width * 0.55
+            let arranged = frames(at: splitX, in: mapped.screen.visibleFrame)
+            guard apply(arranged.terminal, arranged.preview) else { restoreTerminal(); return }
+            positionDividerControl(in: mapped.screen.visibleFrame)
         }
         workspaceVisible = true
         refreshWorkspaceState()
@@ -844,7 +934,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     func reportVisible() {
         guard window.isVisible else {
             writeState(pid: getpid(), terminalPID: terminalPID, status: "failed", error: "AppKit did not make the Draft window visible", to: statePath)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { NSApplication.shared.terminate(nil) }
+            DispatchQueue.main.async { [weak self] in self?.close() }
             return
         }
         writeState(pid: getpid(), terminalPID: terminalPID, status: "visible", warning: warning, to: statePath)
@@ -874,7 +964,7 @@ guard FileManager.default.fileExists(atPath: sourcePath) else {
 writeState(pid: getpid(), terminalPID: terminalPID, status: "launched", to: statePath)
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
-let terminal = terminalApplication(frontmost: NSWorkspace.shared.frontmostApplication)
+let terminal = terminalApplication(sourcePID: terminalPID)
 let target = splitTarget(terminal: terminal, trusted: AXIsProcessTrusted())
 let session = PreviewSession(url: URL(fileURLWithPath: htmlPath), sourcePath: sourcePath, statePath: statePath, commandPath: commandPath, server: server, nvim: nvim, terminal: terminal, target: target)
 session.installTerminationHandler()

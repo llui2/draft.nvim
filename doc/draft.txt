@@ -11,18 +11,38 @@ built PDF is authoritative for a manuscript.
 
 Open any .tex file and run :Dp. A draft/main.tex source participates in the
 manuscript workflow. Other .tex files can be fragments without a preamble or
-PDF build. :Db only builds a file named draft/main.tex. Saving that file
+PDF build. :Db searches upward for a draft/main.tex manuscript with a document
+preamble; it never builds the fragment itself. Saving draft/main.tex
 starts a background build. An explicit :Db reports success or a concise
-failure in Neovim; successful save builds stay quiet.
+failure in Neovim; successful save builds stay quiet. Output is draft/main.pdf;
+auxiliary files and the full build log stay in draft/.build. Failure detail is
+also available through :messages. Queued saves cannot silence a manual build.
 
 *draft-preview*
 
 With Accessibility access, Draft arranges the exact paired terminal and
-preview in a 55/45 layout. The shared divider changes the split. Closing
-Draft restores prior terminal geometry. The moon/sun titlebar button switches
-between remembered light and dark appearances. The red close button is
+preview on that terminal's screen in a 55/45 layout with a 2 px gap. Drag the
+terminal's right edge or the 6 px strip inside Draft's left edge to change the
+split. Minimum widths are 40% for Terminal and 20% for Draft. Other geometry
+changes are restored to the canonical pair. Closing or toggling Draft off
+restores saved terminal geometry; reopening starts at 55/45. Draft itself is
+non-resizable and non-movable in companion mode. The moon/sun titlebar button
+switches between remembered light and dark appearances. The red close button is
 available; minimize and zoom are disabled. The preview scrollbar is hidden,
 but mouse and keyboard scrolling remain available.
+
+The helper retains the exact AX terminal window captured at helper startup,
+not simply the Terminal application. Keep that source window focused during
+first-use compilation. Activation and AX focus events check that exact window;
+an unrelated terminal window does not qualify. The nonactivating arrow panel
+is a child of Draft and floats only while the pair is active. It hides with
+the pair and does not join other Spaces. Arrows call the Ctrl-G sync operations.
+While hidden, Terminal is unconstrained. Reopening retains its AX identity but
+saves its current geometry and uses its current screen for the new split.
+
+Native acceptance is still pending: Cmd-Tab cycles, Terminal A/B switching,
+edge drags, focus transfer, hide/reopen and exact restoration have not been
+observed live in this stabilization pass. Static checks are not GUI proof.
 
 A small dot appears only for preview problems. Yellow means unsupported or
 questionable fast-renderer syntax; red means a rendering failure. Click it
@@ -50,12 +70,14 @@ behavior remains in other buffers. Source cursor or Visual selection maps to
 the smallest rendered range available. The divider arrows use the same
 operations.
 
-The preview has a subtle mark in the left margin for its reading position.
+The preview has a subtle mark in the left margin for its reading position,
+near one quarter of the viewport, snapped to a visible rendered line/block.
 j/k move it by rendered lines; <C-d>/<C-u> scroll half a viewport and update
-it; gg/G move to the ends. Mouse scrolling also updates it. Press <C-g> in
-the preview to jump to the mapped source position. An actual browser text
+it; gg/G move to the first/last mapped line. Mouse scrolling also updates it.
+Press <C-g> in the preview to jump to the mapped source position. Browser text
 selection takes priority and selects the corresponding source range. Clicked
-content sets the reading position. <C-w>h focuses the exact paired terminal;
-<C-w>l from Neovim focuses Draft.
+content moves that passage to the reading line. <C-w>h focuses the exact paired
+terminal; <C-w>l from Neovim focuses Draft.
+Without an active paired Draft, <C-w>l retains normal Neovim window navigation.
 
 vim:tw=78:ts=8:noet:ft=help:

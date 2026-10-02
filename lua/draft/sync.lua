@@ -163,8 +163,9 @@ function M.jump_to_source(start_offset, end_offset, mode)
     vim.api.nvim_win_set_cursor(window, { last_row, 0 })
   elseif mode ~= "cursor" and end_offset > start_offset then
     vim.cmd("normal! v")
+    er, ec = position(starts, end_offset - 1)
     local end_line = lines[er] or ""
-    local end_col = math.max(0, math.min(#end_line, ec - 1))
+    local end_col = math.max(0, math.min(#end_line, ec))
     while end_col > 0 and end_col < #end_line and end_line:byte(end_col + 1) >= 128 and end_line:byte(end_col + 1) < 192 do end_col = end_col - 1 end
     vim.api.nvim_win_set_cursor(window, { er, end_col })
   end

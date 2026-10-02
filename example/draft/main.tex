@@ -5,8 +5,8 @@
 
 \section{A Small Draft}
 
-Open this manuscript in Neovim and run \texttt{:Dp}. The source stays in
-\texttt{draft/main.tex}; Draft renders it beside the terminal. Wrapped prose
+Open this manuscript in Neovim and run \texttt{:Dp}. Draft renders this file
+beside the terminal in companion mode. Wrapped prose
 lets Neovim's \texttt{j} and \texttt{k} follow screen lines. Place the cursor
 in this sentence and press \texttt{Ctrl-G}; the preview moves here. Select
 a word or several lines in Visual mode and sync again to inspect the mapped
@@ -17,7 +17,7 @@ In Draft, a small mark at the left of the text shows the reading position.
 and \texttt{Ctrl-u} move about half a page; \texttt{gg} and \texttt{G}
 reach the ends. Press \texttt{Ctrl-G} to send this position to Neovim.
 A browser text selection takes priority and selects the matching source.
-Click a passage to set the reading position, then press \texttt{Ctrl-w h}
+Click a passage to move it to the reading line, then press \texttt{Ctrl-w h}
 to return. The inline identity $e^{i\pi} = -1$ tests math correspondence.
 The commands \texttt{code-like text} and \text{rendered words} test precise
 inline synchronization.
@@ -34,7 +34,8 @@ For positive integers, the sum of the first $n$ integers is
   \sum_{k=1}^{n} k = \frac{n(n+1)}{2}.
 \]
 
-Use \texttt{:Db} to build the PDF, or open any other .tex fragment and run
+Use \texttt{:Db} to build \texttt{main.pdf} asynchronously; Neovim reports
+success or failure. Open any other .tex fragment and run
 \texttt{:Dp} for a lightweight preview. Use \texttt{:help draft} for help.
 An unsupported prose command in the fast preview shows a small warning dot;
 it does not by itself mean the LaTeX source is invalid.
