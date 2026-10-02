@@ -421,9 +421,7 @@
       if (!current) { mark.style.display = 'none'; delete mark.dataset.sourceOffset; readingAnchor = null; return; }
       readingAnchor = current;
       mark.dataset.sourceOffset = current.offset;
-      const block = readingAnchor.element.closest('[data-source-start]') || readingAnchor.element;
-      mark.style.left = `${Math.max(8, block.getBoundingClientRect().left - 16)}px`;
-      mark.style.top = `${Math.max(0, Math.min(innerHeight - 18, current.y))}px`;
+      mark.style.left = `${Math.max(8, document.getElementById('document').getBoundingClientRect().left - 16)}px`;
       mark.style.display = 'block';
     }
     function moveReading(lines) {

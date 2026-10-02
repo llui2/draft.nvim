@@ -43,6 +43,7 @@ const browserChecks = String.raw`
   const fixture = FIXTURE;
   const byteAt = text => byteLength(fixture.slice(0, fixture.indexOf(text)));
   const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+  const markerIsFixed = () => Math.abs(document.getElementById('reading-mark').getBoundingClientRect().top - innerHeight * .25) < 1;
   window.addEventListener('load', async () => {
     const status = document.createElement('pre');
     status.id = 'test-results';
@@ -87,20 +88,24 @@ const browserChecks = String.raw`
       jumpReading(false);
       await frame();
       check(readingAnchor?.element.closest('h1'), 'gg first mapped position');
+      check(markerIsFixed(), 'fixed marker after gg');
       const startOffset = readingAnchor.offset;
       window.scrollBy({top: lineHeight(), behavior: 'instant'});
       await frame(); updateReadingMark();
       check(readingAnchor.offset >= startOffset, 'line reading motion');
+      check(markerIsFixed(), 'fixed marker after line motion');
       const beforePage = readingAnchor.offset;
       window.scrollBy({top: innerHeight * .5, behavior: 'instant'});
       await frame(); updateReadingMark();
       check(readingAnchor.offset > beforePage, 'half viewport reading motion');
+      check(markerIsFixed(), 'fixed marker after page motion');
       const y = scrollY;
       window.updateSource(long + '\n\nExtra final line.');
       check(Math.abs(scrollY - y) < 2, 'stable scroll on append');
       jumpReading(true);
       await frame();
       check(readingAnchor?.element.textContent.includes('Extra final line.'), 'G last mapped position');
+      check(markerIsFixed(), 'fixed marker after G');
       const mark = document.getElementById('reading-mark').getBoundingClientRect();
       check(mark.top >= 0 && mark.bottom <= innerHeight, 'visible reading mark');
       const reading = window.previewReadingAnchor();

@@ -71,7 +71,7 @@ the smallest rendered range available. The divider arrows use the same
 operations.
 
 The preview has a subtle mark in the left margin for its reading position,
-near one quarter of the viewport, snapped to a visible rendered line/block.
+fixed at one quarter of the viewport height while content scrolls beneath it.
 j/k move it by rendered lines; <C-d>/<C-u> scroll half a viewport and update
 it; gg/G move to the first/last mapped line. Mouse scrolling also updates it.
 Press <C-g> in the preview to jump to the mapped source position. Browser text
