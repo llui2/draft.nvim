@@ -16,7 +16,7 @@
 ]
   % Excluding |x|<0.35 and |y|<0.35 keeps every sampled point finite.
   % The four patches show the symmetry across the singular axes.
-  \addplot3[surf, shader=interp] {-1/(x*y)};
+  \addplot3[surf, shader=faceted interp] {-1/(x*y)};
   \addplot3[surf, shader=interp, domain=-2:-0.35] {-1/(abs(x)*y)};
   \addplot3[surf, shader=interp, y domain=-2:-0.35] {-1/(x*abs(y))};
   \addplot3[surf, shader=interp, domain=-2:-0.35, y domain=-2:-0.35]
