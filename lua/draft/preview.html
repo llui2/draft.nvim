@@ -406,86 +406,86 @@
           const revision = ++figureRevision;
           const currentFigure = figureData;
           if (figureData.startsWith('data:image/png;base64,')) {
-              figureEditMode = false;
-              // The PDF-derived image contains no SVG objects to edit.
-              const figure = document.createElement('div');
-              figure.className = 'tikz-figure';
-              const image = new Image();
-              image.alt = 'Compiled 3D PGFPlots figure';
-              image.src = figureData;
-              figure.append(image);
-              image.decode().then(() => {
-                if (revision === figureRevision && figureData === currentFigure) root.replaceChildren(figure);
-              }).catch(error => {
-                if (revision !== figureRevision || figureData !== currentFigure) return;
-                figureError = `PDF preview image could not decode: ${error.message}`;
-                updateProblems([problem('error', figureError, 0, byteLength(source))]);
-              });
-            } else {
-              const parsed = new DOMParser().parseFromString(figureData, 'image/svg+xml');
-          const svg = parsed.documentElement;
-          if (svg.localName === 'svg' && !parsed.querySelector('parsererror')) {
+            figureEditMode = false;
+            // A rasterized PDF contains no SVG objects to edit.
             const figure = document.createElement('div');
             figure.className = 'tikz-figure';
-            const imported = document.importNode(svg, true);
-            imported.dataset.texPtPerUnit = String(72.27 / 72);
-            for (const marker of [...imported.querySelectorAll('[data-draft-node]')]) {
-              if (marker.parentElement !== imported) continue;
-              const name = marker.dataset.draftNode;
-              const wrapper = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-              wrapper.dataset.draftNode = name;
-              wrapper.dataset.draftXshift = marker.dataset.draftXshift;
-              wrapper.dataset.draftYshift = marker.dataset.draftYshift;
-              imported.insertBefore(wrapper, marker);
-              wrapper.append(marker);
-              marker.removeAttribute('data-draft-node');
-              if (marker.localName === 'path') {
-                const hit = marker.cloneNode(false);
-                hit.removeAttribute('data-draft-node');
-                hit.setAttribute('stroke', 'transparent');
-                hit.setAttribute('stroke-width', '12');
-                hit.setAttribute('stroke-opacity', '1');
-                hit.setAttribute('fill', 'none');
-                hit.setAttribute('pointer-events', 'stroke');
-                wrapper.append(hit);
-              }
-            }
-            figure.append(imported);
-            const edit = document.createElement('button');
-            edit.type = 'button';
-            edit.className = 'figure-edit';
-            edit.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4l6 6M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z"/></svg>';
-            edit.setAttribute('aria-label', 'Edit figure');
-            const canEdit = Boolean(imported.querySelector('[data-draft-node]')) && Number.isSafeInteger(figureChangedtick);
-            edit.disabled = !canEdit;
-            edit.title = canEdit ? 'Move editable labels and arrows' : 'No editable TikZ labels or arrows found';
-            if (!canEdit) figureEditMode = false;
-            figure.classList.toggle('editing', figureEditMode);
-            edit.setAttribute('aria-pressed', String(figureEditMode));
-            edit.addEventListener('click', () => {
-              figureEditMode = !figureEditMode;
-              figure.classList.toggle('editing', figureEditMode);
-              edit.setAttribute('aria-pressed', String(figureEditMode));
-            });
-            figure.append(edit);
-            // WebKit captures feImage group inputs before their PNG shading
-            // finishes decoding, then fails to repaint the filter when it loads.
-            const images = [...imported.querySelectorAll('image')].map(element => {
-              const image = new Image();
-              image.src = element.getAttribute('href') || element.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
-              return image.decode();
-            });
-            const install = () => {
+            const image = new Image();
+            image.alt = 'Compiled 3D PGFPlots figure';
+            image.src = figureData;
+            figure.append(image);
+            image.decode().then(() => {
               if (revision === figureRevision && figureData === currentFigure) root.replaceChildren(figure);
-            };
-            if (images.length) Promise.all(images).then(install).catch(error => {
+            }).catch(error => {
               if (revision !== figureRevision || figureData !== currentFigure) return;
-              figureError = `SVG image could not decode: ${error.message}`;
+              figureError = `PDF preview image could not decode: ${error.message}`;
               updateProblems([problem('error', figureError, 0, byteLength(source))]);
             });
-            else install();
-          }
+          } else {
+            const parsed = new DOMParser().parseFromString(figureData, 'image/svg+xml');
+            const svg = parsed.documentElement;
+            if (svg.localName === 'svg' && !parsed.querySelector('parsererror')) {
+              const figure = document.createElement('div');
+              figure.className = 'tikz-figure';
+              const imported = document.importNode(svg, true);
+              imported.dataset.texPtPerUnit = String(72.27 / 72);
+              for (const marker of [...imported.querySelectorAll('[data-draft-node]')]) {
+                if (marker.parentElement !== imported) continue;
+                const name = marker.dataset.draftNode;
+                const wrapper = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                wrapper.dataset.draftNode = name;
+                wrapper.dataset.draftXshift = marker.dataset.draftXshift;
+                wrapper.dataset.draftYshift = marker.dataset.draftYshift;
+                imported.insertBefore(wrapper, marker);
+                wrapper.append(marker);
+                marker.removeAttribute('data-draft-node');
+                if (marker.localName === 'path') {
+                  const hit = marker.cloneNode(false);
+                  hit.removeAttribute('data-draft-node');
+                  hit.setAttribute('stroke', 'transparent');
+                  hit.setAttribute('stroke-width', '12');
+                  hit.setAttribute('stroke-opacity', '1');
+                  hit.setAttribute('fill', 'none');
+                  hit.setAttribute('pointer-events', 'stroke');
+                  wrapper.append(hit);
+                }
+              }
+              figure.append(imported);
+              const edit = document.createElement('button');
+              edit.type = 'button';
+              edit.className = 'figure-edit';
+              edit.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4l6 6M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z"/></svg>';
+              edit.setAttribute('aria-label', 'Edit figure');
+              const canEdit = Boolean(imported.querySelector('[data-draft-node]')) && Number.isSafeInteger(figureChangedtick);
+              edit.disabled = !canEdit;
+              edit.title = canEdit ? 'Move editable labels and arrows' : 'No editable TikZ labels or arrows found';
+              if (!canEdit) figureEditMode = false;
+              figure.classList.toggle('editing', figureEditMode);
+              edit.setAttribute('aria-pressed', String(figureEditMode));
+              edit.addEventListener('click', () => {
+                figureEditMode = !figureEditMode;
+                figure.classList.toggle('editing', figureEditMode);
+                edit.setAttribute('aria-pressed', String(figureEditMode));
+              });
+              figure.append(edit);
+              // WebKit captures feImage group inputs before their PNG shading
+              // finishes decoding, then fails to repaint the filter when it loads.
+              const images = [...imported.querySelectorAll('image')].map(element => {
+                const image = new Image();
+                image.src = element.getAttribute('href') || element.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+                return image.decode();
+              });
+              const install = () => {
+                if (revision === figureRevision && figureData === currentFigure) root.replaceChildren(figure);
+              };
+              if (images.length) Promise.all(images).then(install).catch(error => {
+                if (revision !== figureRevision || figureData !== currentFigure) return;
+                figureError = `SVG image could not decode: ${error.message}`;
+                updateProblems([problem('error', figureError, 0, byteLength(source))]);
+              });
+              else install();
             }
+          }
         }
         if (!figureData && !figureError) root.textContent = 'Compiling TikZ figure…';
         if (figureError) items.push(problem('error', `TikZ preview: ${figureError}`, 0, byteLength(source)));
@@ -906,7 +906,7 @@
       else if (figureError) updateProblems([problem('error', `TikZ preview: ${figureError}`, 0, byteLength(source))]);
       else updateProblems([]);
     };
-        window.resetFigure = function() {
+    window.resetFigure = function() {
       figureData = null;
       figureChangedtick = null;
       figureEditMode = false;

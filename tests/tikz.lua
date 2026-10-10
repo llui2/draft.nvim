@@ -57,7 +57,7 @@ assert(tikz.document(fragment):match("\\documentclass%[tikz,border=2pt%]"))
 assert(tikz.document(fragment):match("\\usetikzlibrary"))
 
 if vim.fn.executable("latexmk") ~= 1 or vim.fn.executable("pdftocairo") ~= 1 then
-  print("Draft: TikZ detection passed; LaTeX/PDF-to-SVG integration skipped (latexmk or pdftocairo missing)")
+  print("Draft: TikZ detection passed; LaTeX/PDF preview integration skipped (latexmk or pdftocairo missing)")
   return
 end
 
