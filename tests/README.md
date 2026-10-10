@@ -78,18 +78,58 @@ First complex compilations still take roughly 2.5–3 s. Higher-resolution shadi
 makes conversion slightly more expensive; serialization and caching avoid
 redundant compilation instead of claiming to accelerate TeX itself.
 
-The comparison used unmodified PDFs from all five 3D templates and snapshots
-of the production preview page in a temporary native WKWebView. The Möbius
-PDF and Chrome SVG were correct, but WebKit dropped its empty Cairo filter
-destination. A transparent bounding rectangle restores SVG compositing.
-Cairo's multiple shading tiles introduce visible seams in the singular surface;
-that case alone uses a 300 dpi raster of the original PDF. Other figures retain
-SVG axes, labels, paths and editable node IDs. Cairo's embedded interpolated
-shading images are also generated at 300 dpi. Raster fallbacks do not expose
-draggable SVG nodes. Templates and their mathematical content are unchanged.
+Live rendering follow-up (2026-10-10): the earlier isolated WKWebView checks
+missed failures in the full Draft preview. Each template was opened individually
+through the production Neovim plugin, source/command file watchers and native
+helper, and visually compared with the PDF from that actual compilation. A
+copy of the helper was packaged temporarily as an app, with only its foreground
+window bootstrap adjusted for a headless Neovim source; its rendering and
+transport code were unchanged. No template mathematics was edited.
 
-The native snapshots were checked against PDF renders for labels, colors,
-surface shape, clipping and perspective. They validate rendering, not the
-paired window's focus, positioning, live typing or synchronization behavior.
-The existing browser regression page covers dragging, rejected-edit rollback,
-UTF-8 synchronization, document navigation and DOM retention during compilation.
+| Template | Compilation | Original live display | Final live display |
+| --- | --- | --- | --- |
+| annotated-curves | Passed | Correct | Correct, SVG |
+| flow-schematic | Passed | Correct | Correct, SVG |
+| network-diagram | Passed | Correct | Correct, SVG |
+| phase-portrait | Passed | Correct | Correct, SVG |
+| vector-field-3d | Passed | Correct | Correct, SVG |
+| three-dimensional-surface | Passed | Missing shading and clipped axes | Correct, SVG |
+| radial-surface | Passed | Missing shading and clipped axes | Correct, SVG |
+| mobius-strip | Passed | Blank | Correct, SVG |
+| singular-surface | Passed | Correct with existing PDF fallback | Correct with existing PDF fallback |
+
+There are two SVG issues: Cairo's filter inputs need full viewport bounds,
+and WKWebView evaluates referenced groups before their embedded PNG shading
+is decoded, without repainting those filters when decoding finishes. Decode
+the existing images before installing the SVG; retain the last valid figure
+until then and discard stale decode completions. Rewriting SVG IDs and forcing
+an extra frame did not reliably fix the first display, so those experiments
+were removed. Vector axes, labels and paths remain intact in eight templates.
+Cairo's PNG shading stays at 300 dpi. The singular surface renders after the
+decoding fix but still has visible filter seams absent from its PDF, so its
+existing 300 dpi PDF fallback remains necessary. No new renderer or dependency
+was added; that fallback has no draggable SVG nodes.
+
+No compilation failure was reproduced in any unchanged template, including
+repeated switching. Actual LaTeX logs reported success. An undefined command
+in an unsaved test buffer produced a real file/line LaTeX error: Draft now
+opens its existing diagnostic panel automatically with that error and source
+line, while keeping the valid figure. Correcting the buffer recovered normally.
+
+Latest measurements: source publication 41.8 ms; complete compile/conversion
+for Gaussian surface 2.48 s, radial surface 2.33 s, Möbius strip 1.07 s,
+vector field 0.73 s and singular surface 3.05 s. The earlier check run before the image-readiness fix
+was 2.53 s, 2.42 s, 1.05 s, 0.72 s and 3.07 s respectively; these small differences
+are noise, not a compilation speedup. A cached complex figure took 0.33 ms;
+42 compile requests produced two serial builds in 4.91 s. Thirty camera edits
+at 50 ms intervals through live Draft TextChanged events also produced only
+two builds, with maximum concurrent latexmk count one; the latest 75-degree
+camera view was inspected in the native window against its PDF.
+
+All nine final native displays were inspected for labels, colors, shape,
+clipping and perspective. The existing browser page passed 48 checks, including
+node dragging, synchronization, navigation, retained figures during decoding,
+stale decode rejection and visible errors. The Neovim navigation/build checks
+also passed. This does not establish paired Terminal keyboard typing latency,
+physical native label dragging, selection synchronization, focus/Spaces or
+monitor/window lifecycle behavior; those macOS acceptance checks remain open.

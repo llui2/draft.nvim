@@ -210,6 +210,8 @@ end
 
 local function failure(result)
   local output = ((result and result.stdout) or "") .. "\n" .. ((result and result.stderr) or "")
+  local line, message, context = output:match(":(%d+): ([^\n]+)\n(l%.%d+[^\n]+)")
+  if message then return "Line " .. line .. ": " .. message .. "\n" .. context end
   local detail = output:match("! [^\n]+") or output:match("LaTeX Error:[^\n]+") or output:match("Latexmk: All targets[^\n]+")
   return detail or output:sub(-1800):gsub("^%s+", "")
 end
@@ -287,19 +289,19 @@ local function compile(request)
           local contents = vim.fn.readfile(svg)
           if #contents == 0 then finish(nil, "PDF to SVG conversion produced no output"); return end
           local vector = table.concat(contents, "\n")
-          -- WebKit drops feImage compositing when a referenced Cairo group
-          -- has no bounds (notably the Möbius strip's empty destination).
-          -- A non-painting rectangle supplies bounds without changing the PDF.
+          -- feImage fits referenced groups to their bounding boxes in WebKit.
+          -- Cairo expects every input to cover the filter's full viewport,
+          -- including empty destinations and partially painted shading groups.
           local bounds = {}
           for attributes in vector:gmatch("<feImage ([^>]+)>") do
             local id = attributes:match('href="#([^"]+)"')
             local width, height = attributes:match('width="([%d.]+)" height="([%d.]+)"')
             if id and width then bounds[id] = { width, height } end
           end
-          vector = vector:gsub('(<g id="(compositing%-group%-%d+)"[^>]*>)(%s*<g[^>]*>%s*</g>%s*</g>)', function(open, id, close)
+          vector = vector:gsub('(<g id="(compositing%-group%-%d+)"[^>]*>)', function(open, id)
             local size = bounds[id]
-            if not size then return open .. close end
-            return open .. string.format('<rect width="%s" height="%s" fill-opacity="0"/>', size[1], size[2]) .. close
+            if not size then return open end
+            return open .. string.format('<rect width="%s" height="%s" fill-opacity="0"/>', size[1], size[2])
           end)
           local _, composites = vector:gsub("<feComposite", "")
           if composites <= 1 then finish(annotate_svg(vector, marker_colors), nil); return end

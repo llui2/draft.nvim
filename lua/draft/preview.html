@@ -78,6 +78,7 @@
     let previousBlocks = [];
     let figureSVG = null;
     let figureError = null;
+    let figureRevision = 0;
     let figureChangedtick = null;
     let figureEditMode = false;
     let figureEditError = null;
@@ -101,8 +102,9 @@
       const dot = document.getElementById('problem-dot');
       surface.hidden = items.length === 0;
       surface.classList.toggle('error', items.some(item => item.severity === 'error'));
-      surface.classList.remove('open');
-      dot.setAttribute('aria-expanded', 'false');
+      const open = !!figureError && items.length > 0;
+      surface.classList.toggle('open', open);
+      dot.setAttribute('aria-expanded', String(open));
       dot.setAttribute('aria-label', items.length ? `${items.length} preview ${items.length === 1 ? 'problem' : 'problems'}` : 'Preview problems');
       detail.replaceChildren();
       if (items.length > 1) {
@@ -398,8 +400,10 @@
         && (/\\documentclass\s*(?:\[[^\]]*\]\s*)?\{standalone\}/.test(source) || !/\\begin\s*\{document\}/.test(source));
       if (standaloneFigure) {
         document.body.classList.add('figure-mode');
-        root.replaceChildren();
+        if (!figureSVG) root.replaceChildren();
         if (figureSVG) {
+          const revision = ++figureRevision;
+          const currentSVG = figureSVG;
           const parsed = new DOMParser().parseFromString(figureSVG, 'image/svg+xml');
           const svg = parsed.documentElement;
           if (svg.localName === 'svg' && !parsed.querySelector('parsererror')) {
@@ -436,7 +440,22 @@
               edit.setAttribute('aria-pressed', String(figureEditMode));
             });
             figure.append(edit);
-            root.append(figure);
+            // WebKit captures feImage group inputs before their PNG shading
+            // finishes decoding, then fails to repaint the filter when it loads.
+            const images = [...imported.querySelectorAll('image')].map(element => {
+              const image = new Image();
+              image.src = element.getAttribute('href') || element.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+              return image.decode();
+            });
+            const install = () => {
+              if (revision === figureRevision && figureSVG === currentSVG) root.replaceChildren(figure);
+            };
+            if (images.length) Promise.all(images).then(install).catch(error => {
+              if (revision !== figureRevision || figureSVG !== currentSVG) return;
+              figureError = `SVG image could not decode: ${error.message}`;
+              updateProblems([problem('error', figureError, 0, byteLength(source))]);
+            });
+            else install();
           }
         }
         if (!figureSVG && !figureError) root.textContent = 'Compiling TikZ figure…';

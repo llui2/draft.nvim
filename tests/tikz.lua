@@ -121,8 +121,8 @@ result, failure = nil, nil
 tikz.compile(surface3d:gsub("sin%(deg%(x%*y%)%)", "\\undefinedDraftTikzCommand"), function(svg, err) result, failure = svg, err end)
 assert(vim.wait(60000, function() return failure ~= nil end), "invalid TikZ compile timed out")
 assert(not result and failure, "invalid TikZ unexpectedly compiled")
--- Every shipped template uses its unchanged mathematics. Single shading
--- groups retain vector axes; multi-part shading uses a 300 dpi PDF fallback.
+assert(failure:find("Undefined control sequence", 1, true), "actual TeX error was hidden")
+-- Keep vector paths where WebKit compositing works; nested shading needs the PDF fallback.
 for _, path in ipairs(vim.fn.glob("templates/*.tex", false, true)) do
   local source = table.concat(vim.fn.readfile(path), "\n")
   result, failure = nil, nil
@@ -131,11 +131,15 @@ for _, path in ipairs(vim.fn.glob("templates/*.tex", false, true)) do
   assert(vim.wait(60000, function() return result ~= nil or failure ~= nil end), path .. " timed out")
   assert(result, failure)
   if path:match("singular") then
-    assert(result:find('data-draft-raster="true"', 1, true), "multi-part shading retained Cairo seams")
+    assert(result:find('data-draft-raster="true"', 1, true), "nested shading needs PDF fallback")
     assert(result:find('data:image/png;base64,', 1, true), "PDF fallback is missing")
   else
     assert(not result:find('data-draft-raster="true"', 1, true), path .. " lost its vector graphics")
     assert(result:find("<path", 1, true), path .. " lost vector paths")
+    for id in result:gmatch('<feImage [^>]*href="#([^"]+)"') do
+      assert(result:find('<g id="' .. id:gsub('%W', '%%%0') .. '"[^>]*><rect[^>]*fill%-opacity="0"'),
+        path .. ": Cairo filter input has no full viewport bounds: " .. id)
+    end
   end
   if path:match("mobius") then
     assert(result:match('<g id="compositing%-group%-2"[^>]*><rect[^>]*fill%-opacity="0"'), "empty Cairo destination still has no bounds")
