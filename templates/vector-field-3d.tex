@@ -1,0 +1,38 @@
+\documentclass[tikz,border=3pt]{standalone}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{arrows.meta}
+
+\begin{document}
+\begin{tikzpicture}
+\begin{axis}[
+  width=9cm, height=8cm,
+  view={42}{25},
+  xlabel={$x$}, ylabel={$y$}, zlabel={$z$},
+  xmin=-1.5, xmax=1.5, ymin=-1.5, ymax=1.5, zmin=-1.5, zmax=1.5,
+  axis equal image,
+  tick label style={font=\small},
+  label style={font=\small},
+  zlabel style={font=\small},
+]
+  % Sample F(x,y,z)=(-y,x,z/2) at the cube corners.
+  \addplot3[
+    blue!70!black, thick, -{Stealth[length=2mm]},
+    quiver={
+      u=\thisrow{u}, v=\thisrow{v}, w=\thisrow{w},
+      scale arrows=0.28,
+    },
+  ] table[x=x,y=y,z=z] {
+    x  y  z  u  v   w
+   -1 -1 -1  1 -1 -0.5
+   -1 -1  1  1 -1  0.5
+   -1  1 -1 -1 -1 -0.5
+   -1  1  1 -1 -1  0.5
+    1 -1 -1  1  1 -0.5
+    1 -1  1  1  1  0.5
+    1  1 -1 -1  1 -0.5
+    1  1  1 -1  1  0.5
+  };
+\end{axis}
+\end{tikzpicture}
+\end{document}

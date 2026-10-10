@@ -5,9 +5,12 @@ const rules = source.split('// BEGIN pure workspace rules')[1].split('\n').slice
 const tests = String.raw`
 for workspace in [NSRect(x: 0, y: 30, width: 1440, height: 870), NSRect(x: -1920, y: -600, width: 1920, height: 1080)] {
     var divider = workspace.minX + workspace.width * 0.55
+    let initialFrames = splitFrames(at: divider, in: workspace)
+    assert(abs(initialFrames.terminal.width - workspace.width * 0.55) < 0.001)
+    assert(abs(initialFrames.preview.width - workspace.width * 0.45) < 0.001)
     for i in 0..<1000 {
         let frames = splitFrames(at: divider, in: workspace)
-        assert(abs(frames.preview.minX - frames.terminal.maxX - 2) < 0.001)
+        assert(abs(frames.preview.minX - frames.terminal.maxX) < 0.001)
         assert(frames.terminal.minX == workspace.minX && frames.preview.maxX == workspace.maxX)
         assert(frames.terminal.minY == workspace.minY && frames.preview.height == workspace.height)
         assert(frames.terminal.width >= workspace.width * 0.40 - 0.001)

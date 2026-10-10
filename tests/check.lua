@@ -61,6 +61,74 @@ vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
 eq(vim.json.decode(sync.source_position_for_sync()), { start = 15, finish = 21, mode = "char" })
 eq(vim.json.decode(sync.source_position_for_sync()), { start = 20, finish = 21, mode = "cursor" })
 
+local edit_buffer = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_set_current_buf(edit_buffer)
+vim.api.nvim_buf_set_lines(edit_buffer, 0, -1, false, {
+  "% λ is unrelated UTF-8 source",
+  "\\begin{tikzpicture}",
+  "\\node[name=critical, xshift=0pt,",
+  "  yshift=0pt] at (axis cs:1,2) {$\\lambda_c$};",
+  "\\node[name=other, xshift=1.5pt, yshift=-2pt] {α};",
+  "\\end{tikzpicture}",
+})
+vim.bo[edit_buffer].undolevels = -1
+vim.bo[edit_buffer].undolevels = 1000
+sync.set_buffer(edit_buffer)
+local state = sync.node_edit_state()
+assert(state and type(state.changedtick) == "number")
+local first_edit = sync.update_node_shift("critical", -2.25, 3, state.changedtick)
+assert(first_edit.ok, first_edit.error)
+eq(vim.api.nvim_buf_get_lines(edit_buffer, 0, -1, false), {
+  "% λ is unrelated UTF-8 source",
+  "\\begin{tikzpicture}",
+  "\\node[name=critical, xshift=-2.25pt,",
+  "  yshift=3pt] at (axis cs:1,2) {$\\lambda_c$};",
+  "\\node[name=other, xshift=1.5pt, yshift=-2pt] {α};",
+  "\\end{tikzpicture}",
+})
+local stale = sync.update_node_shift("critical", 1, 1, state.changedtick)
+assert(not stale.ok and stale.error == "stale source edit")
+local second_edit
+vim.schedule(function()
+  second_edit = sync.update_node_shift("critical", 0.5, -0.75, first_edit.changedtick)
+end)
+assert(vim.wait(1000, function() return second_edit ~= nil end))
+assert(second_edit.ok, second_edit.error)
+eq(vim.api.nvim_buf_get_lines(edit_buffer, 2, 4, false), {
+  "\\node[name=critical, xshift=0.5pt,",
+  "  yshift=-0.75pt] at (axis cs:1,2) {$\\lambda_c$};",
+})
+vim.cmd("undo")
+eq(vim.api.nvim_buf_get_lines(edit_buffer, 2, 4, false), {
+  "\\node[name=critical, xshift=0pt,",
+  "  yshift=0pt] at (axis cs:1,2) {$\\lambda_c$};",
+})
+local duplicate_buffer = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_set_current_buf(duplicate_buffer)
+vim.api.nvim_buf_set_lines(duplicate_buffer, 0, -1, false, {
+  "\\node[name=duplicate, xshift=0pt, yshift=0pt] {one};",
+  "\\node[name=duplicate, xshift=0pt, yshift=0pt] {two};",
+})
+sync.set_buffer(duplicate_buffer)
+local duplicate = sync.update_node_shift("duplicate", 1, 1, sync.node_edit_state().changedtick)
+assert(not duplicate.ok and duplicate.error == "duplicate node name")
+local unsupported_buffer = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_set_current_buf(unsupported_buffer)
+vim.api.nvim_buf_set_lines(unsupported_buffer, 0, -1, false, {
+  "\\node[name=unsupported, xshift=\\measure, yshift=0pt] {one};",
+})
+sync.set_buffer(unsupported_buffer)
+local unsupported = sync.update_node_shift("unsupported", 1, 1, sync.node_edit_state().changedtick)
+assert(not unsupported.ok and unsupported.error:match("decimal TeX point"))
+local invalid_buffer = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_set_current_buf(invalid_buffer)
+vim.api.nvim_buf_set_lines(invalid_buffer, 0, -1, false, {
+  "\\node[name=invalid, xshift=0pt] {missing yshift};",
+})
+sync.set_buffer(invalid_buffer)
+local invalid = sync.update_node_shift("invalid", 1, 1, sync.node_edit_state().changedtick)
+assert(not invalid.ok and invalid.error:match("exactly one xshift and yshift"))
+
 local jobs, copies = {}, {}
 local system, copy = vim.system, vim.uv.fs_copyfile
 vim.system = function(command, options, callback)
@@ -137,6 +205,40 @@ local helper = startup[6]
 vim.fn.writefile({ vim.json.encode({ pid = 999999, terminalPID = 100, status = "visible" }) }, helper.command[4])
 assert(vim.wait(1000, function() return notices[#notices] == "draft.nvim: preview opened" end))
 assert(preview.paired())
+vim.fn.writefile({ "Linked document", "A second paragraph." }, root .. "/draft/linked.tex")
+assert(preview.open_link("linked.tex", 0))
+eq(#startup, 6) -- The linked document reuses the existing helper.
+local linked_source = vim.json.decode(table.concat(vim.fn.readfile(helper.command[3])))
+eq(linked_source.text, "Linked document\nA second paragraph.")
+eq(linked_source.path, vim.api.nvim_buf_get_name(0))
+assert(preview.open_link("main.tex", 0))
+eq(#startup, 6)
+local returned_source = vim.json.decode(table.concat(vim.fn.readfile(helper.command[3])))
+eq(returned_source.path, vim.api.nvim_buf_get_name(0))
+local pending_figures = {}
+local prior_tikz = package.loaded["draft.tikz"]
+package.loaded["draft.tikz"] = {
+  is_standalone = function(source) return source:find("tikzpicture", 1, true) ~= nil end,
+  compile = function(source, callback) pending_figures[#pending_figures + 1] = { source = source, finish = callback } end,
+}
+local figure_buffer = vim.api.nvim_get_current_buf()
+vim.api.nvim_buf_set_lines(figure_buffer, 0, -1, false, { "\\begin{tikzpicture} old \\end{tikzpicture}" })
+vim.api.nvim_exec_autocmds("TextChanged", { buffer = figure_buffer })
+assert(vim.wait(1000, function() return #pending_figures == 1 end))
+local figure_command = vim.json.decode(table.concat(vim.fn.readfile(helper.command[8])))
+local pending_nonce = figure_command.nonce
+vim.api.nvim_buf_set_lines(figure_buffer, 0, -1, false, { "\\begin{tikzpicture} newest \\end{tikzpicture}" })
+vim.api.nvim_exec_autocmds("TextChanged", { buffer = figure_buffer })
+pending_figures[1].finish("old svg", nil)
+figure_command = vim.json.decode(table.concat(vim.fn.readfile(helper.command[8])))
+eq(figure_command.nonce, pending_nonce)
+eq(figure_command.svg, nil)
+assert(vim.wait(1000, function() return #pending_figures == 2 end))
+pending_figures[2].finish("new svg", nil)
+figure_command = vim.json.decode(table.concat(vim.fn.readfile(helper.command[8])))
+eq(figure_command.action, "figure")
+eq(figure_command.svg, "new svg")
+package.loaded["draft.tikz"] = prior_tikz
 for _, visible in ipairs({ false, true, false, true }) do
   preview.toggle()
   local command = vim.json.decode(table.concat(vim.fn.readfile(helper.command[8])))

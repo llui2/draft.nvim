@@ -5,7 +5,9 @@ Run from the repository root:
 ```sh
 luac -p plugin/draft.lua lua/draft/*.lua
 nvim --headless -u NONE -i NONE -n -l tests/check.lua
+nvim --headless -u NONE -i NONE -n -l tests/navigation.lua
 nvim --headless -u NONE -i NONE -n -l tests/build.lua
+nvim --headless -u NONE -i NONE -n -l tests/tikz.lua
 node tests/preview.mjs
 node tests/window.mjs /tmp/draft-window-check.swift
 swift /tmp/draft-window-check.swift
@@ -14,6 +16,14 @@ swiftc -typecheck lua/draft/window.swift
 
 `build.lua` runs real latexmk builds in temporary directories. `check.lua`
 mocks helper compilation/lifecycle and build jobs; it does not open native windows.
+`navigation.lua` follows a relative `.tex` link and verifies Ctrl-O/Ctrl-I use
+Neovim's jump list while restoring the source cursor and preserving a local mark.
+`tikz.lua` compiles a TikZ diagram, a 2D PGFPlots label, a 2D graph and a 3D
+surface, checks SVG node IDs and saved offsets, and verifies compilation does
+not block Neovim's event loop. `preview.mjs` checks zoom-scaled pixel-to-point
+conversion, TeX's vertical sign and cumulative label offsets. Its browser page
+also simulates a named-label drag, checks the changedtick request and rollback,
+and verifies the label moves before the edit request is released.
 `window.mjs` extracts the production geometry and foreground predicates and
 exercises them without a desktop session.
 
@@ -36,3 +46,11 @@ Cmd-Tab cycles through Safari, Terminal A/B isolation, both shared edges,
 repeated hide/reopen and red close with frame restoration, divider ordering,
 Ctrl-W focus, source/browser selection sync, Spaces and monitors. Passing the
 checks above does not establish any of those native outcomes.
+
+The preview checks also cover basic lists and nesting, quote/center, unknown
+command argument preservation, bounded positional macros, math operators,
+package declarations, UTF-8 declaration masking and diagnostic clipboard text.
+The browser page finishes on `tests/fixtures/lightweight.tex`; its test buttons
+expose warnings/errors and read back the system clipboard after copy clicks.
+These controls belong only to the test page. Native WKWebView clipboard and
+window acceptance still require a paired desktop session.

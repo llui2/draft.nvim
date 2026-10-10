@@ -5,13 +5,12 @@ import WebKit
 
 // BEGIN pure workspace rules (also exercised without an AppKit session).
 func splitFrames(at divider: CGFloat, in workspace: NSRect) -> (terminal: NSRect, preview: NSRect) {
-    let gap: CGFloat = 2
     let minimumDivider = workspace.minX + workspace.width * 0.40
-    let maximumDivider = workspace.maxX - workspace.width * 0.20 - gap
+    let maximumDivider = workspace.maxX - workspace.width * 0.20
     let x = min(max(divider, minimumDivider), maximumDivider)
     return (
         NSRect(x: workspace.minX, y: workspace.minY, width: x - workspace.minX, height: workspace.height),
-        NSRect(x: x + gap, y: workspace.minY, width: workspace.maxX - x - gap, height: workspace.height)
+        NSRect(x: x, y: workspace.minY, width: workspace.maxX - x, height: workspace.height)
     )
 }
 
@@ -32,7 +31,7 @@ final class SplitDragView: NSView {
         windowX = window?.frame.minX ?? startX
     }
     override func mouseDragged(with event: NSEvent) {
-        moveDivider?(windowX + NSEvent.mouseLocation.x - startX - 2)
+        moveDivider?(windowX + NSEvent.mouseLocation.x - startX)
     }
 }
 
@@ -308,6 +307,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     let window: NSWindow
     private let statePath: String
     private let sourcePath: String
+    private let previewURL: URL
     private let commandPath: String
     private var lastCommand: String?
     private let server: String
@@ -330,7 +330,9 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     private var workspaceState: WorkspaceState = .unrelatedAppActive
     private var sourceDebounce: DispatchWorkItem?
     private var currentSource: String?
+    private var currentDocumentPath: String?
     private var sentSource: String?
+    private var sentDocumentPath: String?
     private var pageLoaded = false
     private var splitX: CGFloat = 0
     private var terminalExpected: NSRect?
@@ -345,6 +347,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
     init(url: URL, sourcePath: String, statePath: String, commandPath: String, server: String, nvim: String, terminal: NSRunningApplication?, target: SplitTarget?) {
         self.statePath = statePath
         self.sourcePath = sourcePath
+        self.previewURL = url.standardizedFileURL
         self.commandPath = commandPath
         self.server = server
         self.nvim = nvim
@@ -464,6 +467,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
               let raw = String(data: data, encoding: .utf8), raw != lastCommand,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let action = object["action"] as? String else { return }
+        if !pageLoaded && ["figure", "reset-figure"].contains(action) { return }
         lastCommand = raw
         // Visibility is desired state in every atomic command. Rapid toggles
         // cannot lose parity through coalesced or reordered UNIX signals.
@@ -474,31 +478,61 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         case "sync-source": navigateToSource()
         case "focus-preview": focusPreview()
         case "focus-source": focusSource()
+        case "figure":
+            let svg = object["svg"] as? String
+            let error = object["error"] as? String
+            updateFigure(svg, error, object["changedtick"] as? Int)
+        case "reset-figure": webView.evaluateJavaScript("window.resetFigure()")
         default: break
+        }
+    }
+
+    private func updateFigure(_ svg: String?, _ error: String?, _ changedtick: Int? = nil) {
+        guard let svgJSON = try? JSONEncoder().encode(svg),
+              let errorJSON = try? JSONEncoder().encode(error),
+              let svgLiteral = String(data: svgJSON, encoding: .utf8),
+              let errorLiteral = String(data: errorJSON, encoding: .utf8) else { return }
+        let tickLiteral = changedtick.map(String.init) ?? "null"
+        webView.evaluateJavaScript("window.updateFigure(\(svgLiteral), \(errorLiteral), \(tickLiteral))") { _, error in
+            if let error { NSLog("draft.nvim: figure update failed: %@", error.localizedDescription) }
         }
     }
 
     private func readSource() {
         guard !closing else { return }
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: sourcePath)),
-              let source = try? JSONDecoder().decode(String.self, from: data) else { return }
-        guard source != currentSource else {
+              let object = try? JSONSerialization.jsonObject(with: data) else { return }
+        let source: String
+        let path: String?
+        if let payload = object as? [String: Any], let text = payload["text"] as? String {
+            source = text
+            path = payload["path"] as? String
+        } else if let legacy = try? JSONDecoder().decode(String.self, from: data) {
+            source = legacy
+            path = nil
+        } else { return }
+        guard source != currentSource || path != currentDocumentPath else {
             sendSourceIfReady()
             return
         }
         currentSource = source
+        currentDocumentPath = path
         sendSourceIfReady()
     }
 
     private func sendSourceIfReady() {
-        guard !closing, pageLoaded, let source = currentSource, source != sentSource,
-              let data = try? JSONEncoder().encode(source),
-              let literal = String(data: data, encoding: .utf8) else { return }
+        guard !closing, pageLoaded, let source = currentSource,
+              source != sentSource || currentDocumentPath != sentDocumentPath,
+              let sourceData = try? JSONEncoder().encode(source),
+              let sourceLiteral = String(data: sourceData, encoding: .utf8),
+              let pathData = try? JSONEncoder().encode(currentDocumentPath),
+              let pathLiteral = String(data: pathData, encoding: .utf8) else { return }
         sentSource = source
-        webView.evaluateJavaScript("window.updateSource(\(literal))") { [weak self] _, error in
+        sentDocumentPath = currentDocumentPath
+        webView.evaluateJavaScript("window.updateSource(\(sourceLiteral), \(pathLiteral))") { [weak self] _, error in
             guard let error else { return }
             NSLog("draft.nvim: preview source update failed: %@", error.localizedDescription)
-            if self?.sentSource == source { self?.sentSource = nil }
+            if self?.sentSource == source { self?.sentSource = nil; self?.sentDocumentPath = nil }
         }
     }
 
@@ -506,12 +540,20 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         pageLoaded = true
         applyAppearance()
         readSource()
+        readCommand()
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if let url = navigationAction.request.url, url.scheme == "draft" {
+        guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
+        if url.scheme == "draft" {
             if url.host == "sync" { navigateToPreview(); decisionHandler(.cancel); return }
             if url.host == "focus-source" { focusSource(); decisionHandler(.cancel); return }
+            if url.host == "open" { openLink(url); decisionHandler(.cancel); return }
+            if url.host == "edit-node" {
+                editNode(url)
+                decisionHandler(.cancel)
+                return
+            }
             if url.host == "jump", let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
                let start = components.queryItems?.first(where: { $0.name == "start" })?.value.flatMap(Int.init),
                let end = components.queryItems?.first(where: { $0.name == "end" })?.value.flatMap(Int.init) {
@@ -519,8 +561,68 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
                 decisionHandler(.cancel)
                 return
             }
+            decisionHandler(.cancel)
+            return
         }
-        decisionHandler(.allow)
+        if ["http", "https"].contains(url.scheme?.lowercased() ?? ""), navigationAction.navigationType == .linkActivated {
+            NSWorkspace.shared.open(url)
+            decisionHandler(.cancel)
+            return
+        }
+        if url.scheme == "file", url.standardizedFileURL == previewURL,
+           (navigationAction.navigationType == .other || url.fragment != nil) {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+    }
+
+    private func openLink(_ url: URL) {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        guard let target = components?.queryItems?.first(where: { $0.name == "target" })?.value,
+              let startText = components?.queryItems?.first(where: { $0.name == "start" })?.value,
+              let start = Int(startText), start >= 0,
+              let arguments = try? JSONSerialization.data(withJSONObject: [target, start]),
+              let argumentLiteral = String(data: arguments, encoding: .utf8) else { return }
+        let expression = "luaeval('require(\"draft.preview\").open_link(_A[1], _A[2])', \(argumentLiteral))"
+        guard remoteExpression(expression) == "true" else { return }
+        focusSource()
+    }
+
+    private func editNode(_ url: URL) {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let values = components?.queryItems ?? []
+        guard let name = values.first(where: { $0.name == "name" })?.value,
+              name.range(of: "^[A-Za-z_][A-Za-z0-9_-]*$", options: .regularExpression) != nil,
+              let dxText = values.first(where: { $0.name == "dx" })?.value,
+              let dyText = values.first(where: { $0.name == "dy" })?.value,
+              let dx = Double(dxText), dx.isFinite,
+              let dy = Double(dyText), dy.isFinite,
+              abs(dx) <= 1_000_000, abs(dy) <= 1_000_000,
+              let tickText = values.first(where: { $0.name == "tick" })?.value,
+              let tick = Int(tickText), tick >= 0 else {
+            completeNodeEdit(false, "invalid drag request")
+            return
+        }
+        guard let arguments = try? JSONSerialization.data(withJSONObject: [name, dx, dy, tick]),
+              let argumentLiteral = String(data: arguments, encoding: .utf8) else {
+            completeNodeEdit(false, "could not encode drag request")
+            return
+        }
+        let expression = "luaeval('vim.json.encode(require(\"draft.sync\").update_node_shift(_A[1], _A[2], _A[3], _A[4]))', \(argumentLiteral))"
+        guard let response = remoteExpression(expression),
+              let data = response.data(using: .utf8),
+              let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let ok = result["ok"] as? Bool else {
+            completeNodeEdit(false, "Neovim did not accept the drag edit")
+            return
+        }
+        completeNodeEdit(ok, result["error"] as? String)
+    }
+
+    private func completeNodeEdit(_ ok: Bool, _ error: String?) {
+        let errorJSON = (try? JSONEncoder().encode(error)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+        webView.evaluateJavaScript("window.completeNodeEdit(\(ok ? "true" : "false"), \(errorJSON))")
     }
 
     private func remoteExpression(_ expression: String) -> String? {
@@ -827,7 +929,7 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
             _ = apply(canonical.terminal, canonical.preview)
             return
         }
-        splitX = actual.minX - 2
+        splitX = actual.minX
         let canonical = frames(at: splitX, in: target.screen.visibleFrame)
         splitX = canonical.terminal.maxX
         _ = apply(canonical.terminal, canonical.preview)

@@ -2,9 +2,14 @@ local M = {}
 local preview = { generation = 0, closing_pid = nil, reopen_after_close = false }
 local close_preview, open_preview_window
 
-local function publish_command(action)
+local function publish_command(action, payload)
   local temporary = preview.command .. ".tmp"
   local command = { action = action, visible = not preview.hidden, nonce = vim.uv.hrtime() }
+  if payload then
+    command.svg = payload.svg
+    command.error = payload.error
+    command.changedtick = payload.changedtick
+  end
   if vim.fn.writefile({ vim.json.encode(command) }, temporary) ~= 0 then return false end
   local renamed = vim.uv.fs_rename(temporary, preview.command)
   if not renamed then pcall(vim.uv.fs_unlink, temporary) end
@@ -75,6 +80,13 @@ local function cleanup_watch()
   end
 end
 
+local function cleanup_document_watch()
+  if preview.buf_enter then
+    pcall(vim.api.nvim_del_autocmd, preview.buf_enter)
+    preview.buf_enter = nil
+  end
+end
+
 local function cleanup_startup_watch()
   for _, key in ipairs({ "startup_event", "startup_timeout" }) do
     local handle = preview[key]
@@ -101,7 +113,7 @@ end
 
 local function write_source(text)
   local temporary = preview.source .. ".tmp"
-  local result = vim.fn.writefile({ vim.json.encode(text) }, temporary)
+  local result = vim.fn.writefile({ vim.json.encode({ text = text, path = vim.api.nvim_buf_get_name(preview.buffer) }) }, temporary)
   if result ~= 0 then
     vim.notify("draft.nvim: could not write preview source", vim.log.levels.ERROR)
     return false
@@ -115,11 +127,30 @@ local function write_source(text)
   return true
 end
 
+local function update_figure(source)
+  local tikz = require("draft.tikz")
+  preview.figure_generation = (preview.figure_generation or 0) + 1
+  local generation = preview.figure_generation
+  if not tikz.is_standalone(source) then
+    publish_command("reset-figure")
+    return
+  end
+  publish_command("figure") -- Clear an old error but keep the last valid SVG visible.
+  local state = require("draft.sync").node_edit_state()
+  local changedtick = state and state.changedtick
+  tikz.compile(source, function(svg, err)
+    if generation ~= preview.figure_generation or not preview.command then return end
+    publish_command("figure", { svg = svg, error = err, changedtick = changedtick })
+  end)
+end
+
 local function watch_preview(buffer)
   cleanup_watch()
   local function update()
     if vim.api.nvim_buf_is_valid(buffer) then
-      return write_source(table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n"))
+      local source = table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
+      if write_source(source) then update_figure(source); return true end
+      return false
     end
     return false
   end
@@ -129,6 +160,8 @@ local function watch_preview(buffer)
     group = preview.group,
     buffer = buffer,
     callback = function()
+      -- Invalidate in-flight output as soon as the buffer changes, before debounce.
+      preview.figure_generation = (preview.figure_generation or 0) + 1
       if not preview.timer then
         preview.timer = vim.uv.new_timer()
       end
@@ -148,6 +181,65 @@ local function finish_close(pid)
     preview.reopen_after_close = false
     vim.schedule(M.toggle)
   end
+end
+
+local function switch_buffer(buffer)
+  if not buffer or not vim.api.nvim_buf_is_valid(buffer) or not vim.api.nvim_buf_is_loaded(buffer) then return false end
+  local path = vim.api.nvim_buf_get_name(buffer)
+  if not path:match("%.tex$") then return false end
+  if preview.buffer == buffer then return true end
+  cleanup_watch()
+  remove_keys()
+  if preview.command then publish_command("reset-figure") end
+  preview.buffer = buffer
+  require("draft.sync").set_buffer(buffer)
+  install_keys(buffer)
+  require("draft.prose").enable(buffer)
+  watch_preview(buffer)
+  return true
+end
+
+local function watch_active_document()
+  if preview.buf_enter then pcall(vim.api.nvim_del_autocmd, preview.buf_enter) end
+  preview.buf_enter = vim.api.nvim_create_autocmd("BufEnter", {
+    callback = function(event)
+      if preview.pid and helper_alive(preview.pid) then switch_buffer(event.buf) end
+    end,
+  })
+end
+
+function M.open_link(target, offset)
+  if type(target) ~= "string" or target == "" or target:match("^[A-Za-z][A-Za-z0-9+.-]*:") then return false end
+  local buffer = preview.buffer or vim.api.nvim_get_current_buf()
+  if not buffer or not vim.api.nvim_buf_is_valid(buffer) then return false end
+  local path, fragment = target:match("^([^#]*)#?(.*)$")
+  if not path or path == "" then return false end
+  if not path:match("%.tex$") then return false end
+  local base = vim.fs.dirname(vim.api.nvim_buf_get_name(buffer))
+  local resolved = vim.fs.normalize(path:sub(1, 1) == "/" and path or vim.fs.joinpath(base, path))
+  if vim.fn.filereadable(resolved) ~= 1 then return false end
+  if offset ~= nil then
+    offset = tonumber(offset)
+    if not offset or offset < 0 then return false end
+    if not require("draft.sync").set_cursor_offset(buffer, offset) then return false end
+  end
+  -- Jump to a temporary local mark on this position; Neovim records the
+  -- position we are leaving in its native jump list. Restore the user's mark.
+  local win = vim.api.nvim_get_current_win()
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local mark = vim.api.nvim_buf_get_mark(buffer, "z")
+  vim.api.nvim_buf_set_mark(buffer, "z", cursor[1], cursor[2], {})
+  vim.cmd("normal! 'z")
+  vim.api.nvim_win_set_cursor(win, cursor)
+  if mark[1] == 0 then vim.api.nvim_buf_del_mark(buffer, "z")
+  else vim.api.nvim_buf_set_mark(buffer, "z", mark[1], mark[2], {}) end
+  local ok = pcall(vim.cmd.edit, { args = { resolved } })
+  if not ok then return false end
+  local target_buffer = vim.api.nvim_get_current_buf()
+  if preview.pid and helper_alive(preview.pid) then return switch_buffer(target_buffer) end
+  preview.buffer = target_buffer
+  require("draft.sync").set_buffer(target_buffer)
+  return true
 end
 
 local function wait_for_external_close(pid, deadline)
@@ -179,18 +271,8 @@ function M.toggle()
     vim.notify("Draft: open a .tex file first", vim.log.levels.ERROR)
     return
   end
-  if preview.pid and helper_alive(preview.pid) and preview.buffer ~= vim.api.nvim_get_current_buf() then
-    local old_pid = preview.pid
-    preview.closing_pid = old_pid
-    preview.reopen_after_close = true
-    preview.pid = nil
-    cleanup_watch()
-    remove_keys()
-    pcall(vim.uv.kill, old_pid, "sigterm")
-    wait_for_external_close(old_pid, vim.uv.hrtime() + 3000000000)
-    return
-  end
   if preview.pid and helper_alive(preview.pid) then
+    switch_buffer(vim.api.nvim_get_current_buf())
     if preview.hidden then
       preview.hidden = false
       install_keys(preview.buffer)
@@ -254,6 +336,7 @@ function M.toggle()
   preview.hidden = false
   preview.html = runtime
   preview.buffer = vim.api.nvim_get_current_buf()
+  watch_active_document()
   install_keys(preview.buffer)
   require("draft.prose").enable(preview.buffer)
   if not watch_preview(vim.api.nvim_get_current_buf()) then
@@ -270,10 +353,12 @@ end
 close_preview = function()
   if preview.starting then
     preview.generation = preview.generation + 1
+    preview.figure_generation = (preview.figure_generation or 0) + 1
     if preview.pid then pcall(vim.uv.kill, preview.pid, "sigterm") end
     preview.pid, preview.starting, preview.hidden = nil, false, false
     cleanup_startup_watch()
     cleanup_watch()
+    cleanup_document_watch()
     remove_keys()
     cleanup_state(preview.state, preview.source)
     vim.notify("draft.nvim: preview closed")
@@ -293,7 +378,7 @@ close_preview = function()
   preview.starting = false
   cleanup_startup_watch()
   remove_keys()
-  if not pid then cleanup_watch() end
+  if not pid then cleanup_watch(); cleanup_document_watch() end
   vim.notify("draft.nvim: preview hidden")
 end
 
@@ -310,6 +395,7 @@ open_preview_window = function(binary, html, source, state, server, nvim, window
       preview.starting = false
       cleanup_startup_watch()
       cleanup_watch()
+      cleanup_document_watch()
       remove_keys()
       if process and helper_alive(process.pid) then
         preview.closing_pid = process.pid
@@ -326,6 +412,7 @@ open_preview_window = function(binary, html, source, state, server, nvim, window
           preview.pid = nil
           preview.starting = false
           cleanup_watch()
+          cleanup_document_watch()
           remove_keys()
         end
         local intentional = preview.closing_pid == process.pid
@@ -457,10 +544,12 @@ end
 
 function M.stop()
   preview.generation = preview.generation + 1
+  preview.figure_generation = (preview.figure_generation or 0) + 1
   cleanup_startup_watch()
   if preview.pid then pcall(vim.uv.kill, preview.pid, "sigterm") end
   preview.pid, preview.starting, preview.hidden = nil, false, false
   cleanup_watch()
+  cleanup_document_watch()
   remove_keys()
 end
 

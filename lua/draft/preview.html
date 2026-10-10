@@ -43,6 +43,10 @@
     p { margin: 0 0 1em; }
     .texttt { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: .9em; }
     .display { margin: 1.3em 0; overflow-x: auto; text-align: center; }
+    .figure-mode { max-width: 100%; padding: 48px; }
+    .tikz-figure svg { display: block; width: 100%; height: auto; max-height: 82vh; margin: 0 auto; }
+    .tikz-figure [data-draft-node] { cursor: grab; touch-action: none; }
+    .tikz-figure [data-draft-node].dragging { cursor: grabbing; }
     .error { color: var(--error); white-space: pre-wrap; }
     #problems { position: fixed; top: 34px; right: 14px; z-index: 10; font: 12px/1.35 -apple-system, BlinkMacSystemFont, sans-serif; }
     #problem-dot { width: 12px; height: 12px; padding: 0; border: 0; border-radius: 50%; background: var(--warning-dot); cursor: pointer; }
@@ -64,6 +68,12 @@
   <script>
     let source = "";
     let previousBlocks = [];
+    let figureSVG = null;
+    let figureError = null;
+    let figureChangedtick = null;
+    let figureEditError = null;
+    let activeFigureDrag = null;
+    let pendingFigureEdit = null;
     let highlightTimer;
     let syncRange;
     window.setDraftAppearance = function(mode) {
@@ -75,6 +85,7 @@
     const byteLength = text => new TextEncoder().encode(text).length;
     const problem = (severity, message, startOffset, endOffset) => ({ severity, source: 'preview', message, startOffset, endOffset });
     function updateProblems(items) {
+      currentProblems = items;
       const surface = document.getElementById('problems');
       const detail = document.getElementById('problem-detail');
       const dot = document.getElementById('problem-dot');
@@ -95,34 +106,118 @@
         const row = document.createElement('button');
         row.type = 'button';
         row.textContent = item.message;
-        row.addEventListener('click', () => { window.location.href = `draft://jump?start=${item.startOffset}&end=${item.endOffset}`; });
+        row.addEventListener('click', () => copyDiagnostics([item], row));
         detail.append(row);
       }
     }
     document.getElementById('problem-dot').addEventListener('click', () => {
+      copyDiagnostics(currentProblems, document.getElementById('problem-dot'));
       const surface = document.getElementById('problems');
       surface.classList.toggle('open');
       document.getElementById('problem-dot').setAttribute('aria-expanded', String(surface.classList.contains('open')));
     });
-    function proseWarnings(part, items) {
-      const text = part.text;
-      const skip = /\$[^$\n]+\$|\\(?:texttt|text)\{[^{}]*\}|\\\\/gy;
-      for (let i = 0; i < text.length;) {
-        skip.lastIndex = i;
-        const known = skip.exec(text);
-        if (known) { i = skip.lastIndex; continue; }
-        if (text[i] === '\\' && /[A-Za-z@]/.test(text[i + 1] || '')) {
-          const match = /^\\[A-Za-z@]+\*?/.exec(text.slice(i));
-          const command = match[0];
-          const start = part.offset + byteLength(text.slice(0, i));
-          items.push(problem('warning', `Unsupported preview command ${command}`, start, start + byteLength(command)));
-          i += command.length;
-        } else i++;
+    let macros = new Map();
+    let currentProblems = [];
+    function group(text, start) {
+      if (text[start] !== '{') return null;
+      let depth = 1;
+      for (let i = start + 1; i < text.length; i++) {
+        if (text[i] === '\\') { i++; continue; }
+        if (text[i] === '{') depth++;
+        if (text[i] === '}' && --depth === 0) return { value: text.slice(start + 1, i), end: i + 1 };
       }
+      return null;
+    }
+    // Declarations are global to this preview; masking preserves original UTF-8 offsets.
+    function prepare(text) {
+      macros = new Map();
+      let out = '', cursor = 0;
+      const token = /\\(newcommand|renewcommand|DeclareMathOperator)\*?|\\(usepackage|documentclass)\b/g;
+      let match;
+      while ((match = token.exec(text))) {
+        let i = token.lastIndex;
+        const space = () => { while (/\s/.test(text[i] || '') && i < text.length) i++; };
+        space();
+        if (match[2] && text[i] === '[') { const end = text.indexOf(']', i); if (end >= 0) i = end + 1; space(); }
+        let name = group(text, i);
+        if (!name && match[1]) { const bare = /^\\[A-Za-z@]+/.exec(text.slice(i)); if (bare) name = {value: bare[0], end: i + bare[0].length}; }
+        if (!name) continue;
+        i = name.end; space();
+        let count = 0;
+        if (match[1] && text[i] === '[') {
+          const args = /^\[(\d+)\]/.exec(text.slice(i));
+          if (!args || Number(args[1]) > 9) continue;
+          count = Number(args[1]); i += args[0].length; space();
+        }
+        const body = match[1] ? group(text, i) : name;
+        if (!body) continue;
+        const end = match[1] ? body.end : name.end;
+        if (match[1] && /^\\[A-Za-z@]+$/.test(name.value)) macros.set(name.value, {count, body: match[1] === 'DeclareMathOperator' ? `\\operatorname{${body.value}}` : body.value});
+        out += text.slice(cursor, match.index) + text.slice(match.index, end).replace(/[^\n]/g, char => ' '.repeat(byteLength(char)));
+        cursor = end; token.lastIndex = end;
+      }
+      return out + text.slice(cursor);
+    }
+    function expandMacros(text, items, offset, depth = 0, active = new Set(), budget = {remaining: 100000}) {
+      if (depth >= 16 || text.length > budget.remaining) {
+        items.push(problem('warning', 'Preview macro expansion limit reached', offset, offset + byteLength(text)));
+        return text;
+      }
+      budget.remaining -= text.length;
+      let out = '', cursor = 0, match;
+      const token = /\\[A-Za-z@]+/g;
+      while ((match = token.exec(text))) {
+        const macro = macros.get(match[0]); if (!macro) continue;
+        let end = token.lastIndex, args = [];
+        for (let n = 0; n < macro.count; n++) {
+          while (/\s/.test(text[end] || '') && end < text.length) end++;
+          const arg = group(text, end); if (!arg) break;
+          args.push(arg.value); end = arg.end;
+        }
+        if (args.length !== macro.count) continue;
+        if (active.has(match[0])) {
+          items.push(problem('warning', 'Recursive preview macro ' + match[0], offset, offset + byteLength(text)));
+          continue;
+        }
+        const body = macro.body.replace(/#([1-9])/g, (_, n) => args[Number(n) - 1] ?? '#' + n);
+        out += text.slice(cursor, match.index) + expandMacros(body, items, offset + byteLength(text.slice(0, match.index)), depth + 1, new Set([...active, match[0]]), budget);
+        cursor = end; token.lastIndex = end;
+        if (out.length > 100000) { items.push(problem('warning', 'Preview macro expansion limit reached', offset, offset + byteLength(text))); return text; }
+      }
+      return out + text.slice(cursor);
+    }
+    function diagnosticText(item) {
+      const prefix = source.slice(0, utf16AtByte(source, item.startOffset));
+      const line = prefix.split('\n').length;
+      return `${item.message}\nline ${line}: ${source.split('\n')[line - 1] || ''}`;
+    }
+    async function copyDiagnostics(items, button) {
+      const text = items.map(diagnosticText).join('\n\n');
+      try {
+        let copied = false;
+        if (navigator.clipboard?.writeText) {
+          try { await navigator.clipboard.writeText(text); copied = true; } catch (_) {}
+        }
+        if (!copied) {
+          const selection = window.getSelection();
+          const ranges = Array.from({length: selection.rangeCount}, (_, i) => selection.getRangeAt(i).cloneRange());
+          const focused = document.activeElement;
+          const field = document.createElement('textarea'); field.value = text;
+          field.style.cssText = 'position:fixed;opacity:0'; document.body.append(field);
+          field.select(); const copied = document.execCommand('copy'); field.remove();
+          focused?.focus({preventScroll: true});
+          selection.removeAllRanges(); ranges.forEach(range => selection.addRange(range));
+          if (!copied) throw Error('Clipboard unavailable');
+        }
+        const label = button.getAttribute('aria-label');
+        button.setAttribute('aria-label', 'Copied'); button.title = 'Copied';
+        button.style.opacity = '.45';
+        setTimeout(() => { button.style.opacity = ''; button.title = ''; if (label) button.setAttribute('aria-label', label); else button.removeAttribute('aria-label'); }, 900);
+      } catch (_) { button.title = 'Could not copy diagnostic'; }
     }
 
     function parse() {
-      const lines = source.split('\n');
+      const lines = prepare(source).split('\n');
       const lineOffsets = [];
       let total = 0;
       for (const line of lines) { lineOffsets.push(total); total += new TextEncoder().encode(line).length + 1; }
@@ -138,6 +233,22 @@
         if (/\\begin\{document\}/.test(line)) { inDocument = true; continue; }
         if (/\\end\{document\}/.test(line)) { flush(); break; }
         if (!inDocument && /^\s*\\(?:documentclass|usepackage|title|author|date)\b/.test(line)) continue;
+        const environment = line.match(/^\s*\\begin\{(itemize|enumerate|quote|center)\}/);
+        if (environment) {
+          flush();
+          let depth = 0, end = index, content = '';
+          for (; end < lines.length; end++) {
+            const row = lines[end];
+            const tokens = [...row.matchAll(/\\(begin|end)\{(itemize|enumerate|quote|center)\}/g)];
+            for (const token of tokens) depth += token[1] === 'begin' ? 1 : -1;
+            content += (end === index ? '' : '\n') + row;
+            if (depth === 0) break;
+          }
+          end = Math.min(end, lines.length - 1);
+          blocks.push({kind: environment[1], value: content, start: index + 1, end: end + 1,
+            startOffset: lineOffsets[index], endOffset: lineOffsets[end] + byteLength(lines[end])});
+          index = end; continue;
+        }
         const heading = line.match(/^\s*\\(section|subsection)\{([^{}]*)\}/);
         if (heading) {
           flush();
@@ -176,49 +287,144 @@
       const mapped = (text, offset) => text
         ? `<span data-map-start="${offset}" data-map-end="${offset + new TextEncoder().encode(text).length}">${escapeHtml(text)}</span>`
         : '';
-      if (block.kind === 'section') return `<h1 ${attr}>${mapped(block.value, block.startOffset)}</h1>`;
-      if (block.kind === 'subsection') return `<h2 ${attr}>${mapped(block.value, block.startOffset)}</h2>`;
+      if (block.kind === 'section') return `<h1 ${attr}>${inline(block.value, block.startOffset)}</h1>`;
+      if (block.kind === 'subsection') return `<h2 ${attr}>${inline(block.value, block.startOffset)}</h2>`;
       if (block.kind === 'math') {
         try {
-          return `<div class="display" ${attr}>${katex.renderToString(block.value, { displayMode: true, throwOnError: false, strict: "ignore" })}</div>`;
+          return `<div class="display" ${attr}>${katex.renderToString(expandMacros(block.value, items, block.startOffset), { displayMode: true, throwOnError: true, strict: "ignore" })}</div>`;
         } catch (_) {
           items.push(problem('error', 'Preview could not render a display equation', block.startOffset, block.endOffset));
           return `<div class="display error" ${attr}>${escapeHtml(block.value)}</div>`;
         }
       }
-      const body = block.parts.map(part => {
-        const token = /\$([^$\n]+)\$|\\(texttt|text)\{([^{}]*)\}|\\\\/g;
-        let out = '', cursor = 0, match;
-        while ((match = token.exec(part.text))) {
-          out += mapped(part.text.slice(cursor, match.index), part.offset + new TextEncoder().encode(part.text.slice(0, cursor)).length);
-          if (match[1] !== undefined) {
-            const start = part.offset + new TextEncoder().encode(part.text.slice(0, match.index)).length;
-            const end = part.offset + new TextEncoder().encode(part.text.slice(0, token.lastIndex)).length;
-            try { out += `<span data-map-start="${start}" data-map-end="${end}" data-math="true">${katex.renderToString(match[1], { throwOnError: false, strict: "ignore" })}</span>`; }
-            catch (_) { items.push(problem('error', 'Preview could not render an inline equation', start, end)); out += mapped(match[0], start); }
-          } else {
-            if (match[2] === undefined) out += '<br>';
-            else {
-              const textStart = match.index + match[0].indexOf('{') + 1;
-              const commandStart = part.offset + byteLength(part.text.slice(0, match.index));
-              const commandEnd = part.offset + byteLength(part.text.slice(0, token.lastIndex));
-              out += `<span class="${match[2] === 'texttt' ? 'texttt' : ''}" data-inline-command="true" data-map-start="${commandStart}" data-map-end="${commandEnd}">${mapped(match[3], part.offset + byteLength(part.text.slice(0, textStart)))}</span>`;
+      function inline(text, offset, expandedText = false) {
+        const mappedText = (value, start) => mapped(value, start);
+        let out = '', i = 0;
+        while (i < text.length) {
+          const start = offset + byteLength(text.slice(0, i));
+          const math = /^(?:\$([^$\n]+)\$|\\\(([\s\S]*?)\\\))/.exec(text.slice(i));
+          if (math) {
+            const value = expandMacros(math[1] ?? math[2], items, start);
+            try { out += `<span data-map-start="${start}" data-map-end="${start + byteLength(math[0])}" data-math="true">${katex.renderToString(value, {throwOnError: true, strict: 'ignore'})}</span>`; }
+            catch (error) { items.push(problem('error', error.message || 'Preview could not render an inline equation', start, start + byteLength(math[0]))); out += mappedText(math[0], start); }
+            i += math[0].length; continue;
+          }
+          const command = /^\\([A-Za-z@]+)\*?/.exec(text.slice(i));
+          if (command) {
+            let end = i + command[0].length;
+            const macro = macros.get(command[0]);
+            if (macro && !expandedText) {
+              for (let n = 0; n < macro.count; n++) { while (/\s/.test(text[end] || '') && end < text.length) end++; const arg = group(text, end); if (!arg) break; end = arg.end; }
+              const original = text.slice(i, end), expanded = expandMacros(original, items, start);
+              // Expanded text is atomic for synchronization; its length is not source length.
+              out += `<span data-map-start="${start}" data-map-end="${offset + byteLength(text.slice(0, end))}" data-math="true">${inline(expanded, start, true).replace(/ data-(?:map-start|map-end|inline-command|math)="[^"]*"/g, "")}</span>`;
+              i = end; continue;
             }
+            while (/\s/.test(text[end] || '') && end < text.length) end++;
+            const arg = group(text, end);
+            if (arg) {
+              if (['begin', 'end'].includes(command[1])) items.push(problem('warning', `Unsupported preview environment ${arg.value}`, start, start + byteLength(command[0]) + byteLength(arg.value) + 2));
+              let body = inline(arg.value, offset + byteLength(text.slice(0, end + 1)), expandedText);
+              let linkTarget = null;
+              let tag = {textbf:'strong', textit:'em', emph:'em', texttt:'code'}[command[1]] || 'span';
+              if (command[1] === 'url') { tag = 'a'; linkTarget = arg.value; }
+              if (command[1] === 'href') {
+                const second = group(text, arg.end); if (second) { body = inline(second.value, offset + byteLength(text.slice(0, arg.end + 1)), expandedText); end = second.end; tag = 'a'; linkTarget = arg.value; }
+                else end = arg.end;
+              } else end = arg.end;
+              let href = '';
+              if (tag === 'a' && linkTarget) {
+                if (/^https?:\/\//i.test(linkTarget)) href = ` href="${escapeHtml(linkTarget)}"`;
+                else if (/^#[A-Za-z0-9_][\w:.-]*$/.test(linkTarget)) href = ` href="${escapeHtml(linkTarget)}"`;
+                else if (!/^(?:\/\/|[A-Za-z][A-Za-z0-9+.-]*:)/.test(linkTarget) && /^[^?#]+\.tex(?:#[A-Za-z0-9_][\w:.-]*)?$/i.test(linkTarget))
+                  href = ` href="draft://open?target=${encodeURIComponent(linkTarget)}&start=${start}"`;
+              }
+              if (command[1] === 'label' && /^[A-Za-z0-9_][\w:.-]*$/.test(arg.value)) {
+                out += `<span id="${escapeHtml(arg.value)}" style="display:inline-block;width:0;height:1px;scroll-margin-top:35vh" data-map-start="${start}" data-map-end="${offset + byteLength(text.slice(0, end))}"></span>`;
+              } else {
+                out += `<${tag}${href} class="${command[1] === 'texttt' ? 'texttt' : ''}" data-inline-command="true" data-map-start="${start}" data-map-end="${offset + byteLength(text.slice(0, end))}">${body}</${tag}>`;
+              }
+              i = end; continue;
+            }
+            items.push(problem('warning', `Unsupported preview command ${command[0]}`, start, start + byteLength(command[0])));
+            out += mappedText(command[0], start); i += command[0].length; continue;
+          }
+          if (text.slice(i, i + 2) === '\\\\') { out += '<br>'; i += 2; continue; }
+          let end = i + 1; while (end < text.length && !['\\', '$'].includes(text[end])) end++;
+          out += mappedText(text.slice(i, end), start); i = end;
+        }
+        return out;
+      }
+      if (['itemize', 'enumerate', 'quote', 'center'].includes(block.kind)) {
+        const token = /\\(begin|end)\{(itemize|enumerate|quote|center)\}|\\item\b(?:\[([^\]]*)\])?/g;
+        let out = '', cursor = 0, stack = [], match;
+        while ((match = token.exec(block.value))) {
+          out += inline(block.value.slice(cursor, match.index), block.startOffset + byteLength(block.value.slice(0, cursor)));
+          if (match[1] === 'begin') {
+            const tag = {itemize:'ul', enumerate:'ol', quote:'blockquote', center:'div'}[match[2]];
+            stack.push({tag, item:false}); out += `<${tag}${match[2] === 'center' ? ' style="text-align:center"' : ''}>`;
+          } else if (match[1] === 'end') {
+            const entry = stack.pop(); if (entry) out += (entry.item ? '</li>' : '') + `</${entry.tag}>`;
+          } else {
+            const entry = stack[stack.length - 1];
+            if (entry && ['ul','ol'].includes(entry.tag)) { out += (entry.item ? '</li>' : '') + '<li>'; entry.item = true; if (match[3]) out += inline(match[3], block.startOffset + byteLength(block.value.slice(0, match.index))); }
+            else out += inline(match[0], block.startOffset + byteLength(block.value.slice(0, match.index)));
           }
           cursor = token.lastIndex;
         }
-        out += mapped(part.text.slice(cursor), part.offset + new TextEncoder().encode(part.text.slice(0, cursor)).length);
-        return out;
-      }).join('<br>');
+        out += inline(block.value.slice(cursor), block.startOffset + byteLength(block.value.slice(0, cursor)));
+        if (stack.length) items.push(problem('warning', 'Unclosed preview environment', block.startOffset, block.endOffset));
+        while (stack.length) { const entry = stack.pop(); out += (entry.item ? '</li>' : '') + `</${entry.tag}>`; }
+        return `<div ${attr}>${out}</div>`;
+      }
+      const body = block.parts.map(part => inline(part.text, part.offset)).join('<br>');
       return `<p ${attr}>${body}</p>`;
     }
 
     function render() {
       const root = document.getElementById('document');
       const items = [];
+      const standaloneFigure = /\\begin\s*\{tikzpicture\*?\}/.test(source)
+        && (/\\documentclass\s*(?:\[[^\]]*\]\s*)?\{standalone\}/.test(source) || !/\\begin\s*\{document\}/.test(source));
+      if (standaloneFigure) {
+        document.body.classList.add('figure-mode');
+        root.replaceChildren();
+        if (figureSVG) {
+          const parsed = new DOMParser().parseFromString(figureSVG, 'image/svg+xml');
+          const svg = parsed.documentElement;
+          if (svg.localName === 'svg' && !parsed.querySelector('parsererror')) {
+            const figure = document.createElement('div');
+            figure.className = 'tikz-figure';
+            const imported = document.importNode(svg, true);
+            imported.dataset.texPtPerUnit = String(72.27 / 72);
+            for (const marker of [...imported.querySelectorAll('g[data-draft-node]')]) {
+              if (marker.parentElement !== imported || marker.hasAttribute('transform')) continue;
+              const name = marker.dataset.draftNode;
+              const wrapper = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+              wrapper.dataset.draftNode = name;
+              wrapper.dataset.draftXshift = marker.dataset.draftXshift;
+              wrapper.dataset.draftYshift = marker.dataset.draftYshift;
+              imported.insertBefore(wrapper, marker);
+              wrapper.append(marker);
+              marker.removeAttribute('data-draft-node');
+            }
+            figure.append(imported);
+            root.append(figure);
+          }
+        }
+        if (!figureSVG && !figureError) root.textContent = 'Compiling TikZ figure…';
+        if (figureError) items.push(problem('error', `TikZ preview: ${figureError}`, 0, byteLength(source)));
+        if (figureEditError) items.push(problem('warning', `Label edit rejected: ${figureEditError}`, 0, byteLength(source)));
+        updateProblems(items);
+        updateReadingMark();
+        return;
+      }
+      document.body.classList.remove('figure-mode');
+      figureSVG = null;
+      figureError = null;
       const oldNodes = new Map();
       for (const block of previousBlocks) {
-        const key = `${block.kind}\0${block.value}`;
+        const key = block.key;
         const nodes = oldNodes.get(key) || [];
         nodes.push(block);
         oldNodes.set(key, nodes);
@@ -233,9 +439,8 @@
       }
       let cursor = root.firstChild;
       for (const block of blocks) {
-        if (block.kind === 'paragraph') block.parts.forEach(part => proseWarnings(part, items));
-        if (block.kind === 'section' || block.kind === 'subsection') proseWarnings({ text: block.value, offset: block.startOffset }, items);
-        const key = `${block.kind}\0${block.value}`;
+        const key = `${block.kind}\0${block.value}\0${JSON.stringify([...macros])}`;
+        block.key = key;
         const reusable = oldNodes.get(key);
         const prior = reusable && reusable.length ? reusable.shift() : null;
         let element = prior?.element || null;
@@ -247,7 +452,7 @@
             items.push(problem('error', 'Preview could not render this block', block.startOffset, block.endOffset));
             template.innerHTML = `<p class="error" data-source-start="${block.start}" data-source-end="${block.end}" data-map-start="${block.startOffset}" data-map-end="${block.endOffset}">${escapeHtml(block.value)}</p>`;
           }
-          block.errors = items.slice(before).filter(item => item.severity === 'error');
+          block.errors = items.slice(before);
           element = template.content.firstElementChild;
         } else {
           block.errors = (prior.errors || []).map(item => ({ ...item,
@@ -504,8 +709,127 @@
     });
     let pendingWindow = false;
 
-    window.updateSource = function(nextSource) {
+    const documentScrollPositions = new Map();
+    let currentDocumentPath = null;
+    window.updateSource = function(nextSource, nextPath) {
+      const changingDocument = currentDocumentPath !== null && nextPath && currentDocumentPath !== nextPath;
+      if (changingDocument) documentScrollPositions.set(currentDocumentPath, window.scrollY);
+      currentDocumentPath = nextPath || currentDocumentPath;
       source = nextSource;
+      const standaloneFigure = /\\begin\s*\{tikzpicture\*?\}/.test(source)
+        && (/\\documentclass\s*(?:\[[^\]]*\]\s*)?\{standalone\}/.test(source) || !/\\begin\s*\{document\}/.test(source));
+      if (standaloneFigure && document.querySelector('.tikz-figure svg')) return;
+      render();
+      if (changingDocument) requestAnimationFrame(() => window.scrollTo(0, documentScrollPositions.get(currentDocumentPath) || 0));
+    };
+
+    function dragPoint(svg, x, y) {
+      const matrix = svg.getScreenCTM();
+      if (!matrix) return null;
+      const point = svg.createSVGPoint();
+      point.x = x; point.y = y;
+      const local = point.matrixTransform(matrix.inverse());
+      return {x: local.x, y: local.y};
+    }
+    function texDisplacement(dx, dy, scale) { return {x: dx * scale, y: -dy * scale}; }
+    function shiftAfterDrag(baseX, baseY, dx, dy) {
+      return {x: Number((baseX + dx).toFixed(3)), y: Number((baseY + dy).toFixed(3))};
+    }
+    window.draftFigureDragPoint = dragPoint;
+    window.draftFigureTexDisplacement = texDisplacement;
+    window.draftFigureShiftAfterDrag = shiftAfterDrag;
+    function restoreDrag(drag) {
+      for (const [group, transform] of drag.transforms) {
+        if (transform == null) group.removeAttribute('transform');
+        else group.setAttribute('transform', transform);
+        group.classList.remove('dragging');
+      }
+    }
+    function placeDrag(drag, x, y) {
+      const point = dragPoint(drag.svg, x, y);
+      if (!point) return null;
+      const dx = point.x - drag.origin.x, dy = point.y - drag.origin.y;
+      if (Math.hypot(x - drag.startX, y - drag.startY) < 2) return {dx, dy, moved: false};
+      drag.moved = true;
+      for (const group of drag.groups) group.setAttribute('transform', `translate(${dx} ${dy})`);
+      return {dx, dy, moved: true};
+    }
+    document.getElementById('document').addEventListener('pointerdown', event => {
+      if (event.button !== 0 || !Number.isSafeInteger(figureChangedtick)) return;
+      const target = event.target.closest?.('[data-draft-node]');
+      if (!target) return;
+      const name = target.dataset.draftNode;
+      const svg = target.ownerSVGElement;
+      if (!svg || target.parentElement !== svg) return;
+      const groups = [...svg.querySelectorAll('[data-draft-node]')].filter(group => group.dataset.draftNode === name && group.parentElement === svg);
+      const baseX = Number(target.dataset.draftXshift), baseY = Number(target.dataset.draftYshift);
+      const origin = dragPoint(svg, event.clientX, event.clientY);
+      if (!groups.length || !origin || !Number.isFinite(baseX) || !Number.isFinite(baseY)) return;
+      activeFigureDrag = {name, svg, groups, origin, startX: event.clientX, startY: event.clientY,
+        baseX, baseY, tick: figureChangedtick,
+        transforms: groups.map(group => [group, group.getAttribute('transform')]), moved: false};
+      for (const group of groups) group.classList.add('dragging');
+      try { svg.setPointerCapture(event.pointerId); } catch (_) {}
+      event.preventDefault();
+    });
+    window.addEventListener('pointermove', event => {
+      if (!activeFigureDrag) return;
+      placeDrag(activeFigureDrag, event.clientX, event.clientY);
+    });
+    window.addEventListener('pointerup', event => {
+      const drag = activeFigureDrag;
+      if (!drag) return;
+      activeFigureDrag = null;
+      const delta = placeDrag(drag, event.clientX, event.clientY);
+      if (!delta?.moved || !drag.groups.some(group => group.isConnected)) {
+        restoreDrag(drag);
+        return;
+      }
+      for (const group of drag.groups) group.classList.remove('dragging');
+      pendingFigureEdit = drag;
+      const scale = Number(drag.svg.dataset.texPtPerUnit);
+      const tex = texDisplacement(delta.dx, delta.dy, scale);
+      const shift = shiftAfterDrag(drag.baseX, drag.baseY, tex.x, tex.y);
+      const dx = shift.x, dy = shift.y;
+      const query = new URLSearchParams({name: drag.name, dx: String(dx), dy: String(dy), tick: String(drag.tick)});
+      const request = new CustomEvent('draft-node-edit', {detail: {name: drag.name, dx, dy, tick: drag.tick}, cancelable: true});
+      window.dispatchEvent(request);
+      if (!request.defaultPrevented) window.location.href = `draft://edit-node?${query}`;
+      event.preventDefault();
+    });
+    window.addEventListener('pointercancel', () => {
+      if (!activeFigureDrag) return;
+      restoreDrag(activeFigureDrag);
+      activeFigureDrag = null;
+    });
+    window.completeNodeEdit = function(ok, error) {
+      const drag = pendingFigureEdit;
+      pendingFigureEdit = null;
+      if (!drag) return;
+      if (ok) {
+        figureEditError = null;
+        return;
+      }
+      restoreDrag(drag);
+      figureEditError = error || 'source changed or node syntax is unsupported';
+      updateProblems([problem('warning', `Label edit rejected: ${figureEditError}`, 0, byteLength(source))]);
+    };
+    window.updateFigure = function(svg, error, changedtick) {
+      if (svg) {
+        figureSVG = svg;
+        figureChangedtick = Number.isSafeInteger(changedtick) ? changedtick : null;
+        figureEditError = null;
+      }
+      figureError = error || null;
+      if (svg || !document.querySelector('.tikz-figure svg')) render();
+      else if (figureError) updateProblems([problem('error', `TikZ preview: ${figureError}`, 0, byteLength(source))]);
+      else updateProblems([]);
+    };
+    window.resetFigure = function() {
+      figureSVG = null;
+      figureChangedtick = null;
+      figureError = null;
+      figureEditError = null;
       render();
     };
 

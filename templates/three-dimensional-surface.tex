@@ -1,0 +1,23 @@
+\documentclass[tikz,border=3pt]{standalone}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+\begin{document}
+\begin{tikzpicture}
+\begin{axis}[
+  width=10cm, height=7cm,
+  view={45}{30},
+  xlabel={$x$}, ylabel={$y$}, zlabel={$z$},
+  domain=-2:2, y domain=-2:2,
+  samples=35, samples y=35,
+  colormap/viridis,
+  colorbar,
+  tick label style={font=\small},
+  label style={font=\small},
+  zlabel style={font=\small},
+]
+  \addplot3[surf, shader=interp]
+    {exp(-0.45*(x^2+y^2))*cos(deg(sqrt(x^2+y^2)))};
+\end{axis}
+\end{tikzpicture}
+\end{document}

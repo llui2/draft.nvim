@@ -43,6 +43,21 @@ local function position(starts, offset)
   return row, math.max(0, offset - starts[row])
 end
 
+function M.set_cursor_offset(buffer, offset)
+  if not buffer or not vim.api.nvim_buf_is_valid(buffer) or type(offset) ~= "number" or offset < 0 then return false end
+  local lines, starts, length = lines_and_starts(buffer)
+  local row, col = position(starts, math.min(offset, length))
+  local window = vim.fn.bufwinid(buffer)
+  if window == -1 then
+    vim.api.nvim_set_current_buf(buffer)
+    window = vim.api.nvim_get_current_win()
+  else
+    vim.api.nvim_set_current_win(window)
+  end
+  vim.api.nvim_win_set_cursor(window, { row, col })
+  return true
+end
+
 local function highlight(buffer, start_offset, end_offset)
   if not vim.api.nvim_buf_is_valid(buffer) then return end
   generation = generation + 1
@@ -139,6 +154,237 @@ function M.set_buffer(buffer)
   M.buffer = buffer
   pending_visual = nil
   recent_visual = nil
+end
+
+local function trim_bounds(text, first, last)
+  while first <= last and text:sub(first, first):match("%s") do first = first + 1 end
+  while last >= first and text:sub(last, last):match("%s") do last = last - 1 end
+  return first, last
+end
+
+local function skip_space_and_comments(source, index)
+  while index <= #source do
+    local char = source:sub(index, index)
+    if char:match("%s") then
+      index = index + 1
+    elseif char == "%" then
+      local newline = source:find("\n", index, true)
+      if not newline then return #source + 1 end
+      index = newline + 1
+    else
+      break
+    end
+  end
+  return index
+end
+
+local function node_option_range(source, index)
+  local depth, braces, escaped = 1, 0, false
+  local cursor = index + 1
+  while cursor <= #source do
+    local char = source:sub(cursor, cursor)
+    if escaped then
+      escaped = false
+    elseif char == "\\" then
+      escaped = true
+    elseif char == "%" then
+      local newline = source:find("\n", cursor, true)
+      if not newline then return nil end
+      cursor = newline
+    elseif char == "{" then
+      braces = braces + 1
+    elseif char == "}" and braces > 0 then
+      braces = braces - 1
+    elseif braces == 0 and char == "[" then
+      depth = depth + 1
+    elseif braces == 0 and char == "]" then
+      depth = depth - 1
+      if depth == 0 then return index, cursor end
+    end
+    cursor = cursor + 1
+  end
+  return nil
+end
+
+local function option_segments(source, first, last)
+  local segments, segment_start = {}, first
+  local braces, brackets, escaped = 0, 0, false
+  local cursor = first
+  while cursor <= last do
+    local char = source:sub(cursor, cursor)
+    if escaped then
+      escaped = false
+    elseif char == "\\" then
+      escaped = true
+    elseif char == "%" then
+      local newline = source:find("\n", cursor, true)
+      if not newline or newline > last then break end
+      cursor = newline
+    elseif char == "{" then
+      braces = braces + 1
+    elseif char == "}" and braces > 0 then
+      braces = braces - 1
+    elseif braces == 0 and char == "[" then
+      brackets = brackets + 1
+    elseif braces == 0 and char == "]" and brackets > 0 then
+      brackets = brackets - 1
+    elseif braces == 0 and brackets == 0 and char == "," then
+      table.insert(segments, { segment_start, cursor - 1 })
+      segment_start = cursor + 1
+    end
+    cursor = cursor + 1
+  end
+  table.insert(segments, { segment_start, last })
+  return segments
+end
+
+local function parse_option(source, first, last)
+  local braces, brackets, escaped = 0, 0, false
+  for cursor = first, last do
+    local char = source:sub(cursor, cursor)
+    if escaped then
+      escaped = false
+    elseif char == "\\" then
+      escaped = true
+    elseif char == "{" then
+      braces = braces + 1
+    elseif char == "}" and braces > 0 then
+      braces = braces - 1
+    elseif braces == 0 and char == "[" then
+      brackets = brackets + 1
+    elseif braces == 0 and char == "]" and brackets > 0 then
+      brackets = brackets - 1
+    elseif char == "=" and braces == 0 and brackets == 0 then
+      local key_first, key_last = trim_bounds(source, first, cursor - 1)
+      local value_first, value_last = trim_bounds(source, cursor + 1, last)
+      return source:sub(key_first, key_last), value_first, value_last
+    end
+  end
+  local key_first, key_last = trim_bounds(source, first, last)
+  return source:sub(key_first, key_last), nil, nil
+end
+
+local function number_text(value)
+  if type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge or math.abs(value) > 1000000 then
+    return nil
+  end
+  if value == 0 then value = 0 end
+  local result = string.format("%.9f", value):gsub("0+$", ""):gsub("%.$", "")
+  return result
+end
+
+local function find_named_nodes(source, name)
+  local found, cursor = {}, 1
+  while cursor <= #source do
+    local char = source:sub(cursor, cursor)
+    if char == "%" then
+      local newline = source:find("\n", cursor, true)
+      if not newline then break end
+      cursor = newline + 1
+    elseif source:sub(cursor, cursor + 4) == "\\node"
+      and not source:sub(cursor + 5, cursor + 5):match("[%a@]") then
+      local bracket = skip_space_and_comments(source, cursor + 5)
+      if source:sub(bracket, bracket) == "[" then
+        local option_first, option_last = node_option_range(source, bracket)
+        if option_first then
+          local fields = {}
+          for _, segment in ipairs(option_segments(source, option_first + 1, option_last - 1)) do
+            local key, value_first, value_last = parse_option(source, segment[1], segment[2])
+            if key == "name" and value_first then
+              local candidate = source:sub(value_first, value_last)
+              if candidate:match("^[%a_][%w_%-]*$") and candidate == name then
+                table.insert(fields, { first = option_first, last = option_last })
+                break
+              end
+            end
+          end
+          for _, field in ipairs(fields) do table.insert(found, field) end
+          cursor = option_last + 1
+        else
+          cursor = bracket + 1
+        end
+      else
+        cursor = cursor + 5
+      end
+    else
+      cursor = cursor + 1
+    end
+  end
+  return found
+end
+
+local function find_node_shifts(source, first, last)
+  local shifts = { name = 0, xshift = 0, yshift = 0 }
+  for _, segment in ipairs(option_segments(source, first + 1, last - 1)) do
+    local key, value_first, value_last = parse_option(source, segment[1], segment[2])
+    if shifts[key] ~= nil then
+      shifts[key] = shifts[key] + 1
+      if not value_first then return nil, "node option " .. key .. " must have a value" end
+      if key ~= "name" then
+        local value = source:sub(value_first, value_last)
+        if not (value:match("^[+-]?%d+%.?%d*pt$") or value:match("^[+-]?%.%d+pt$")) then
+          return nil, "node option " .. key .. " must be a decimal TeX point value"
+        end
+        shifts[key .. "_range"] = { value_first, value_last }
+      end
+    end
+  end
+  if shifts.name ~= 1 then return nil, "node must have exactly one name option" end
+  if shifts.xshift ~= 1 or shifts.yshift ~= 1 then return nil, "node must have exactly one xshift and yshift option" end
+  return shifts
+end
+
+-- The preview can pass arguments through luaeval's _A list, then JSON-encode
+-- the returned table; identifiers never need to be interpolated as Lua code.
+-- Returns the source version that a preview should pass back with an edit.
+function M.node_edit_state()
+  local buffer = M.buffer
+  if not buffer or not vim.api.nvim_buf_is_valid(buffer) then return nil end
+  return { changedtick = vim.api.nvim_buf_get_changedtick(buffer) }
+end
+
+-- Only the small, explicit syntax `\\node[name=id, xshift=...pt, yshift=...pt]`
+-- is editable. Replacing the option list in one API call keeps the edit atomic
+-- for Neovim undo while preserving every byte outside the two numeric values.
+function M.update_node_shift(name, dx_pt, dy_pt, expected_tick)
+  local buffer = M.buffer
+  if not buffer or not vim.api.nvim_buf_is_valid(buffer) then return { ok = false, error = "no source buffer" } end
+  if not vim.api.nvim_buf_is_loaded(buffer) or not vim.bo[buffer].modifiable then
+    return { ok = false, error = "source buffer is not modifiable" }
+  end
+  if type(name) ~= "string" or not name:match("^[%a_][%w_%-]*$") then
+    return { ok = false, error = "invalid node identifier" }
+  end
+  if type(expected_tick) ~= "number" or expected_tick ~= vim.api.nvim_buf_get_changedtick(buffer) then
+    return { ok = false, error = "stale source edit" }
+  end
+  local dx, dy = number_text(dx_pt), number_text(dy_pt)
+  if not dx or not dy then return { ok = false, error = "displacements must be finite numbers within +/-1000000 pt" } end
+
+  local lines, starts = lines_and_starts(buffer)
+  local source = table.concat(lines, "\n")
+  local nodes = find_named_nodes(source, name)
+  if #nodes == 0 then return { ok = false, error = "named node not found" } end
+  if #nodes > 1 then return { ok = false, error = "duplicate node name" } end
+  local node = nodes[1]
+  local shifts, problem = find_node_shifts(source, node.first, node.last)
+  if not shifts then return { ok = false, error = problem } end
+
+  local edits = {
+    { shifts.xshift_range[1], shifts.xshift_range[2], dx .. "pt" },
+    { shifts.yshift_range[1], shifts.yshift_range[2], dy .. "pt" },
+  }
+  local option_text = source:sub(node.first, node.last)
+  for i = #edits, 1, -1 do
+    local edit = edits[i]
+    local a, b = edit[1] - node.first + 1, edit[2] - node.first + 1
+    option_text = option_text:sub(1, a - 1) .. edit[3] .. option_text:sub(b + 1)
+  end
+  local start_row, start_col = position(starts, node.first - 1)
+  local end_row, end_col = position(starts, node.last)
+  local replacement = vim.split(option_text, "\n", { plain = true })
+  vim.api.nvim_buf_set_text(buffer, start_row - 1, start_col, end_row - 1, end_col, replacement)
+  return { ok = true, changedtick = vim.api.nvim_buf_get_changedtick(buffer) }
 end
 
 function M.jump_to_source(start_offset, end_offset, mode)

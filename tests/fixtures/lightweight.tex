@@ -1,0 +1,37 @@
+\usepackage{amsmath,amssymb,hyperref}
+\usepackage{not-a-real-package}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\vect}[1]{\mathbf{#1}}
+\newcommand{\word}[1]{\textbf{#1}}
+\DeclareMathOperator{\rank}{rank}
+
+\section{Lightweight notes}
+These notes use \textbf{bold}, \textit{italics}, \texttt{code},
+\href{https://example.com}{a link}, and \foo{preserved text}.
+The custom prose command renders \word{important}.
+
+\begin{itemize}
+  \item First point with $x\in\R$.
+  \item Second point with \textbf{emphasis}.
+  \begin{enumerate}
+    \item Nested first
+    \item Nested second
+  \end{enumerate}
+\end{itemize}
+
+\begin{enumerate}
+  \item Ordered first
+  \item Ordered second
+\end{enumerate}
+
+\begin{quote}
+A short quotation with $\vect{x}$.
+\end{quote}
+
+\begin{center}
+Centered note.
+\end{center}
+
+\[
+  \rank A = 2, \qquad \vect{x}\in\R^2
+\]

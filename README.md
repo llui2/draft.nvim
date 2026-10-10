@@ -1,16 +1,25 @@
-# Draft
+<h1>
+  <img src="icon.png" width="44" alt="Draft logo">
+  draft.nvim
+</h1>
 
-Draft pairs Neovim with a native, live LaTeX preview on macOS. Neovim remains the editor; the built PDF is authoritative for manuscripts.
+*LaTeX in flow.*
 
-**Status: beta.** The fast preview covers common prose, headings, and math. Native window coupling still needs live macOS acceptance tests.
+Draft pairs Neovim with a live LaTeX preview on macOS. Prose, math, TikZ and PGFPlots render beside the source; `Ctrl-G` moves between them.
 
-| Command | Action |
-| --- | --- |
-| `:Dp` | Toggle the preview for the current `.tex` file, including standalone fragments. |
-| `:Db` | Resolve and asynchronously build the project's `draft/main.tex` to `draft/main.pdf`. Saving the manuscript also builds it quietly. |
+Install with your Neovim plugin manager:
 
-With an active preview, `Ctrl-G` synchronizes the other surface to the current cursor, Visual selection, reading mark, or browser text selection. `Ctrl-W l` focuses Draft and `Ctrl-W h` returns to the paired terminal. In Draft, `j`/`k`, `Ctrl-D`/`Ctrl-U`, `gg`, and `G` move the reading position.
+```lua
+{ "llui2/draft.nvim" }
+```
 
-Companion mode uses the captured Terminal window's screen: 55/45 panes, a 2 px gap, and a shared divider. Drag Terminal's right edge or the strip inside Draft's left edge. Closing or hiding restores the saved Terminal frame. Cmd-Tab, Terminal A/B isolation, and native resize/focus behavior remain unverified in the current stabilization pass.
+Open a `.tex` file and run `:Dp` for a live preview or `:Db` to build the project manuscript.
 
-Install with a Neovim plugin manager. Preview requires macOS and Swift; paired layout requires Accessibility access. PDF builds require `latexmk` and LaTeX. KaTeX is bundled for offline rendering. See `:help draft`.
+```vim
+:Dp
+:Db
+```
+
+Local `.tex` links follow the document in Neovim and Draft. Use `Ctrl-O` and `Ctrl-I` to move through document history; HTTPS links open in your browser.
+
+Previews require macOS and Swift. PDF builds require `latexmk`; figure previews also require `pdftocairo`. See [`:help draft`](doc/draft.txt).

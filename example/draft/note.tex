@@ -1,0 +1,117 @@
+\usepackage{amsmath,amssymb,hyperref}
+\usepackage{an-optional-package}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\vect}[1]{\mathbf{#1}}
+\newcommand{\inner}[2]{\langle #1,#2\rangle}
+\newcommand{\important}[1]{\textbf{#1}}
+\newcommand{\N}{\mathbb{N}}
+\renewcommand{\N}{\mathbb{N}_0}
+\DeclareMathOperator{\rank}{rank}
+
+\section{Draft preview playground}
+This is a lightweight note: it needs no document class, document environment,
+or PDF build. Open it with \texttt{:Dp} and edit it to see the preview refresh.
+The package declarations above are compatibility hints; no packages are executed.
+Even the invented package is ignored without a warning.
+
+\subsection{Original example}
+this is some text
+
+this are some equations
+\begin{equation}
+  \int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}.
+\end{equation}
+
+\begin{itemize}
+  \item First item
+  \item Second item
+\end{itemize}
+
+
+\section{Text and links}
+An ordinary paragraph can contain \textbf{bold text}, \textit{italic text},
+\emph{emphasis}, \texttt{monospace code}, and \text{a plain text wrapper}.
+The custom prose command makes this \important{important}.
+
+Here is \href{https://www.latex-project.org}{a named link}, and here is a URL:
+\url{https://www.latex-project.org}.
+
+This sentence uses an explicit line break.\\The next sentence starts below it.
+
+An unknown wrapper can still preserve its content:
+\unknownwrapper{This text remains visible, including \textbf{nested formatting}.}
+
+\section{Lists}
+\begin{itemize}
+  \item A simple bullet with \textbf{bold text}.
+  \item A bullet with inline mathematics: $x\in\R$.
+  \item A bullet containing a nested numbered list:
+  \begin{enumerate}
+    \item Read the note.
+    \item Change an equation and watch the live preview.
+    \item Use Ctrl-G to synchronize source and preview.
+  \end{enumerate}
+\end{itemize}
+
+\begin{enumerate}
+  \item Numbered lists work on their own, too.
+  \item They can contain a nested bullet list:
+  \begin{itemize}
+    \item Keep the source as ordinary LaTeX.
+    \item Preview a fragment without compiling a document.
+  \end{itemize}
+\end{enumerate}
+
+\section{Quotation and centering}
+\begin{quote}
+A quotation can contain \textit{formatted prose} and inline math such as
+$\inner{\vect{x}}{\vect{y}}=0$.
+\end{quote}
+
+\begin{center}
+This passage is centered, with \textbf{a little emphasis}.
+\end{center}
+
+\section{Mathematics and custom commands}
+Inline math works with dollar signs, $e^{i\pi}+1=0$, or parentheses,
+\(a^2+b^2=c^2\).
+
+The zero-argument commands give $\R$ and $\N$.
+The one-argument command gives $\vect{x}$, and the two-argument command gives
+$\inner{\vect{x}}{\vect{y}}$.
+The definition of N above is replaced using renewcommand, so $0\in\N$.
+The declared math operator gives $\rank A=2$.
+
+\[
+  \frac{d}{dx}\sin x = \cos x,
+  \qquad \sum_{k=1}^{n} k = \frac{n(n+1)}{2}.
+\]
+
+\begin{equation*}
+  A = \begin{pmatrix}1 & 0\\0 & 1\end{pmatrix},
+  \qquad \vect{x}\in\R^2,
+  \qquad \rank A = 2.
+\end{equation*}
+
+\[
+  \begin{aligned}
+    f(x) &= x^2+2x+1,\\
+         &= (x+1)^2.
+  \end{aligned}
+\]
+
+\section{Reading and diagnostics}
+Try Ctrl-G from the source, or select some preview text and use Ctrl-G there.
+Use j and k to scroll, Ctrl-D and Ctrl-U for half-page motion, and gg or G to
+jump to the beginning or end. The sun/moon control changes the appearance.
+
+To try diagnostics, add an unknown command without an argument, or an invalid
+math command inside an equation. Click the small problem indicator to copy all
+diagnostics, or click an individual diagnostic to copy just that message and
+its source line. The clicked control briefly dims after a successful copy.
+
+\subsection{Deliberate limits}
+This preview supports a small LaTeX subset. Macro arguments must be braced;
+optional defaults, TeX scoping, custom environments, and package execution are
+not supported. Put list, quote, and center environments at the start of a line.
+Use inline math inside lists, and place display equations outside them.
