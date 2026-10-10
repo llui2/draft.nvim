@@ -148,6 +148,10 @@ const browserChecks = String.raw`
       window.updateFigure('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>', null);
       const validFigure = document.querySelector('.tikz-figure svg');
       check(validFigure, 'inline vector figure');
+      window.updateFigure('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>', null);
+      check(document.querySelector('.tikz-figure svg') === validFigure, 'identical figure does not redraw');
+      window.updateFigure(null, null);
+      check(document.querySelector('.tikz-figure svg') === validFigure, 'last valid figure survives recompilation');
       window.updateFigure(null, 'synthetic compile error');
       check(document.querySelector('.tikz-figure svg') === validFigure, 'last valid figure survives compile error');
       check(!document.getElementById('problems').hidden, 'figure compile error is reported');
@@ -205,6 +209,9 @@ const browserChecks = String.raw`
       const prior = document.querySelector('p');
       window.updateSource('prefix\n\n' + fixture);
       check([...document.querySelectorAll('p')].includes(prior), 'incremental DOM reuse');
+      const retained = [...document.querySelectorAll('p')];
+      window.updateSource('prefix\n\n' + fixture);
+      check(retained.every((node, i) => document.querySelectorAll('p')[i] === node), 'identical source preserves DOM');
       const inner = [...document.querySelectorAll('[data-inline-command]')].find(el => el.textContent === 'important').firstElementChild;
       check(Number(inner.dataset.mapStart) === wordStart + 8, 'incremental byte offset shift');
       const long = fixture + '\n\n' + Array.from({length: 35}, (_, i) => 'Reading paragraph ' + i + '. A longer line for navigation.').join('\n\n');

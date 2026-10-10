@@ -82,7 +82,8 @@
     const escapeHtml = text => text.replace(/[&<>"']/g, char => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[char]);
-    const byteLength = text => new TextEncoder().encode(text).length;
+    const encoder = new TextEncoder();
+    const byteLength = text => encoder.encode(text).length;
     const problem = (severity, message, startOffset, endOffset) => ({ severity, source: 'preview', message, startOffset, endOffset });
     function updateProblems(items) {
       currentProblems = items;
@@ -220,7 +221,7 @@
       const lines = prepare(source).split('\n');
       const lineOffsets = [];
       let total = 0;
-      for (const line of lines) { lineOffsets.push(total); total += new TextEncoder().encode(line).length + 1; }
+      for (const line of lines) { lineOffsets.push(total); total += byteLength(line) + 1; }
       const blocks = [];
       let current = null;
       let inDocument = false;
@@ -275,8 +276,8 @@
           continue;
         }
         if (!line.trim()) { flush(); continue; }
-        if (!current) current = { kind: 'paragraph', value: line, parts: [{ text: line, offset: lineOffsets[index] }], start: index + 1, end: index + 1, startOffset: lineOffsets[index], endOffset: lineOffsets[index] + new TextEncoder().encode(line).length };
-        else { current.value += '\n' + line; current.parts.push({ text: line, offset: lineOffsets[index] }); current.end = index + 1; current.endOffset = lineOffsets[index] + new TextEncoder().encode(line).length; }
+        if (!current) current = { kind: 'paragraph', value: line, parts: [{ text: line, offset: lineOffsets[index] }], start: index + 1, end: index + 1, startOffset: lineOffsets[index], endOffset: lineOffsets[index] + byteLength(line) };
+        else { current.value += '\n' + line; current.parts.push({ text: line, offset: lineOffsets[index] }); current.end = index + 1; current.endOffset = lineOffsets[index] + byteLength(line); }
       }
       flush();
       return blocks;
@@ -437,9 +438,10 @@
         updateProblems([problem('error', 'Preview could not parse this source', 0, byteLength(source))]);
         return;
       }
+      const macroKey = JSON.stringify([...macros]);
       let cursor = root.firstChild;
       for (const block of blocks) {
-        const key = `${block.kind}\0${block.value}\0${JSON.stringify([...macros])}`;
+        const key = `${block.kind}\0${block.value}\0${macroKey}`;
         block.key = key;
         const reusable = oldNodes.get(key);
         const prior = reusable && reusable.length ? reusable.shift() : null;
@@ -713,6 +715,7 @@
     let currentDocumentPath = null;
     window.updateSource = function(nextSource, nextPath) {
       const changingDocument = currentDocumentPath !== null && nextPath && currentDocumentPath !== nextPath;
+      if (nextSource === source && (!nextPath || nextPath === currentDocumentPath)) return;
       if (changingDocument) documentScrollPositions.set(currentDocumentPath, window.scrollY);
       currentDocumentPath = nextPath || currentDocumentPath;
       source = nextSource;
@@ -815,13 +818,14 @@
       updateProblems([problem('warning', `Label edit rejected: ${figureEditError}`, 0, byteLength(source))]);
     };
     window.updateFigure = function(svg, error, changedtick) {
+      const changed = svg && svg !== figureSVG;
       if (svg) {
         figureSVG = svg;
         figureChangedtick = Number.isSafeInteger(changedtick) ? changedtick : null;
         figureEditError = null;
       }
       figureError = error || null;
-      if (svg || !document.querySelector('.tikz-figure svg')) render();
+      if (changed || !document.querySelector('.tikz-figure svg')) render();
       else if (figureError) updateProblems([problem('error', `TikZ preview: ${figureError}`, 0, byteLength(source))]);
       else updateProblems([]);
     };

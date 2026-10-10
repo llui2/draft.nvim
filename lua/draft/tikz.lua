@@ -214,23 +214,59 @@ local function failure(result)
   return detail or output:sub(-1800):gsub("^%s+", "")
 end
 
-function M.compile(source, callback)
+local directory
+local running, pending, cached
+local revision = 0
+local start_next
+
+local function dependencies()
+  local files = {}
+  local recorder = directory and vim.fs.joinpath(directory, "out", "figure.fls")
+  if not recorder or vim.fn.filereadable(recorder) ~= 1 then return files end
+  for _, line in ipairs(vim.fn.readfile(recorder)) do
+    local path = line:match("^INPUT (.+)")
+    if path then
+      path = vim.fs.normalize(path)
+      if path:sub(1, #directory) ~= directory then
+        local stat = vim.uv.fs_stat(path)
+        if stat then files[path] = { size = stat.size, sec = stat.mtime.sec, nsec = stat.mtime.nsec } end
+      end
+    end
+  end
+  return files
+end
+
+local function cache_valid()
+  for path, prior in pairs(cached.files) do
+    local stat = vim.uv.fs_stat(path)
+    if not stat or stat.size ~= prior.size or stat.mtime.sec ~= prior.sec or stat.mtime.nsec ~= prior.nsec then return false end
+  end
+  return true
+end
+
+-- Invalidate immediately on an edit, including before the next source publication.
+function M.invalidate()
+  revision = revision + 1
+  pending = nil
+end
+
+local function compile(request)
+  local source, callback = request.source, request.callback
   local instrumented, marker_colors = M.instrument(source)
   local document = M.document(instrumented)
   if not document then callback(nil, "No standalone TikZ figure"); return end
   if vim.fn.executable("latexmk") ~= 1 then callback(nil, "latexmk is not installed"); return end
   if vim.fn.executable("pdftocairo") ~= 1 then callback(nil, "pdftocairo is not installed (needed to convert the PDF to SVG)"); return end
 
-  local directory = vim.fn.tempname()
+  directory = directory or vim.fn.tempname() -- Neovim owns and removes this session directory.
   local output = vim.fs.joinpath(directory, "out")
   vim.fn.mkdir(output, "p")
   local input = vim.fs.joinpath(directory, "figure.tex")
   local written = vim.fn.writefile(vim.split(document, "\n", { plain = true }), input)
-  if written ~= 0 then vim.fn.delete(directory, "rf"); callback(nil, "could not write temporary TikZ source"); return end
+  if written ~= 0 then callback(nil, "could not write temporary TikZ source"); return end
 
   local function finish(svg, err)
     vim.schedule(function()
-      vim.fn.delete(directory, "rf")
       callback(svg, err)
     end)
   end
@@ -240,21 +276,98 @@ function M.compile(source, callback)
   }
   local ok, err = pcall(vim.system, command, { text = true }, function(result)
     vim.schedule(function()
+      if request.revision ~= revision then finish(nil); return end
       if result.code ~= 0 then finish(nil, failure(result)); return end
       local pdf = vim.fs.joinpath(output, "figure.pdf")
       local svg = vim.fs.joinpath(directory, "figure.svg")
-      local converted, convert_err = pcall(vim.system, { "pdftocairo", "-svg", "-f", "1", "-l", "1", pdf, svg }, { text = true }, function(conversion)
+      local converted, convert_err = pcall(vim.system, { "pdftocairo", "-r", "300", "-svg", "-f", "1", "-l", "1", pdf, svg }, { text = true }, function(conversion)
         vim.schedule(function()
+          if request.revision ~= revision then finish(nil); return end
           if conversion.code ~= 0 then finish(nil, failure(conversion)); return end
           local contents = vim.fn.readfile(svg)
           if #contents == 0 then finish(nil, "PDF to SVG conversion produced no output"); return end
-          finish(annotate_svg(table.concat(contents, "\n"), marker_colors), nil)
+          local vector = table.concat(contents, "\n")
+          -- WebKit drops feImage compositing when a referenced Cairo group
+          -- has no bounds (notably the Möbius strip's empty destination).
+          -- A non-painting rectangle supplies bounds without changing the PDF.
+          local bounds = {}
+          for attributes in vector:gmatch("<feImage ([^>]+)>") do
+            local id = attributes:match('href="#([^"]+)"')
+            local width, height = attributes:match('width="([%d.]+)" height="([%d.]+)"')
+            if id and width then bounds[id] = { width, height } end
+          end
+          vector = vector:gsub('(<g id="(compositing%-group%-%d+)"[^>]*>)(%s*<g[^>]*>%s*</g>%s*</g>)', function(open, id, close)
+            local size = bounds[id]
+            if not size then return open .. close end
+            return open .. string.format('<rect width="%s" height="%s" fill-opacity="0"/>', size[1], size[2]) .. close
+          end)
+          local _, composites = vector:gsub("<feComposite", "")
+          if composites <= 1 then finish(annotate_svg(vector, marker_colors), nil); return end
+          -- Separate Cairo shading tiles acquire seams in WebKit. Render the
+          -- authoritative PDF only for this case, retaining its page bounds.
+          local function rasterize()
+            local png = vim.fs.joinpath(directory, "figure")
+            local raster_ok, raster_err = pcall(vim.system,
+              { "pdftocairo", "-png", "-singlefile", "-r", "300", "-f", "1", "-l", "1", pdf, png },
+              { text = true }, function(raster)
+                vim.schedule(function()
+                  if request.revision ~= revision then finish(nil); return end
+                  if raster.code ~= 0 then finish(nil, failure(raster)); return end
+                  local file = io.open(png .. ".png", "rb")
+                  if not file then finish(nil, "PDF raster conversion produced no output"); return end
+                  local data = file:read("*a"); file:close()
+                  local width, height = vector:match('viewBox="0 0 ([%d.]+) ([%d.]+)"')
+                  if not width then finish(nil, "PDF conversion has no page bounds"); return end
+                  finish(string.format('<svg xmlns="http://www.w3.org/2000/svg" width="%spt" height="%spt" viewBox="0 0 %s %s" data-draft-raster="true"><image width="%s" height="%s" href="data:image/png;base64,%s"/></svg>',
+                    width, height, width, height, width, height, vim.base64.encode(data)))
+                end)
+              end)
+            if not raster_ok then finish(nil, tostring(raster_err)) end
+          end
+          -- Marker colors are for vector editing; the raster must use the
+          -- original text colors. Raster figures have no draggable SVG nodes.
+          if next(marker_colors) then
+            vim.fn.writefile(vim.split(M.document(source), "\n", { plain = true }), input)
+            local original_ok, original_err = pcall(vim.system, command, { text = true }, function(original)
+              vim.schedule(function()
+                if request.revision ~= revision then finish(nil); return end
+                if original.code ~= 0 then finish(nil, failure(original)); return end
+                rasterize()
+              end)
+            end)
+            if not original_ok then finish(nil, tostring(original_err)) end
+          else rasterize() end
         end)
       end)
       if not converted then finish(nil, tostring(convert_err)) end
     end)
   end)
-  if not ok then vim.fn.delete(directory, "rf"); callback(nil, tostring(err)) end
+  if not ok then callback(nil, tostring(err)) end
+end
+
+start_next = function()
+  if running or not pending then return end
+  local request = pending
+  pending, running = nil, true
+  compile({ source = request.source, revision = request.revision, callback = function(svg, err)
+    running = false
+    if request.revision == revision then
+      if svg then cached = { source = request.source, svg = svg, files = dependencies() } end
+      request.callback(svg, err)
+    end
+    start_next()
+  end })
+end
+
+function M.compile(source, callback)
+  M.invalidate()
+  local current = revision
+  if cached and cached.source == source and cache_valid() then
+    vim.schedule(function() if current == revision then callback(cached.svg) end end)
+    return
+  end
+  pending = { source = source, callback = callback, revision = current }
+  start_next()
 end
 
 return M

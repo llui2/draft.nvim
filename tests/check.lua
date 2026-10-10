@@ -218,13 +218,16 @@ eq(returned_source.path, vim.api.nvim_buf_get_name(0))
 local pending_figures = {}
 local prior_tikz = package.loaded["draft.tikz"]
 package.loaded["draft.tikz"] = {
+  invalidate = function() end,
   is_standalone = function(source) return source:find("tikzpicture", 1, true) ~= nil end,
   compile = function(source, callback) pending_figures[#pending_figures + 1] = { source = source, finish = callback } end,
 }
 local figure_buffer = vim.api.nvim_get_current_buf()
 vim.api.nvim_buf_set_lines(figure_buffer, 0, -1, false, { "\\begin{tikzpicture} old \\end{tikzpicture}" })
+local publish_start = vim.uv.hrtime()
 vim.api.nvim_exec_autocmds("TextChanged", { buffer = figure_buffer })
 assert(vim.wait(1000, function() return #pending_figures == 1 end))
+print(string.format("Draft: edit to source publication %.1f ms", (vim.uv.hrtime() - publish_start) / 1e6))
 local figure_command = vim.json.decode(table.concat(vim.fn.readfile(helper.command[8])))
 local pending_nonce = figure_command.nonce
 vim.api.nvim_buf_set_lines(figure_buffer, 0, -1, false, { "\\begin{tikzpicture} newest \\end{tikzpicture}" })
@@ -238,6 +241,28 @@ pending_figures[2].finish("new svg", nil)
 figure_command = vim.json.decode(table.concat(vim.fn.readfile(helper.command[8])))
 eq(figure_command.action, "figure")
 eq(figure_command.svg, "new svg")
+-- Switching back to prose clears the figure once. Continuous keystrokes
+-- publish during typing, and subsequent prose edits never reset WebKit.
+vim.api.nvim_buf_set_lines(figure_buffer, 0, -1, false, { "Prose $x^2$." })
+vim.api.nvim_exec_autocmds("TextChangedI", { buffer = figure_buffer })
+assert(vim.wait(1000, function()
+  local command = vim.json.decode(table.concat(vim.fn.readfile(helper.command[8])))
+  return command.action == "reset-figure"
+end))
+local reset = table.concat(vim.fn.readfile(helper.command[8]))
+local during_typing = false
+for index = 1, 20 do
+  vim.api.nvim_buf_set_lines(figure_buffer, 0, -1, false, { "Prose $x^2$ edit " .. index })
+  vim.api.nvim_exec_autocmds("TextChangedI", { buffer = figure_buffer })
+  vim.wait(8)
+  local payload = vim.json.decode(table.concat(vim.fn.readfile(helper.command[3])))
+  if index < 20 and payload.text:match("edit") then during_typing = true end
+  eq(table.concat(vim.fn.readfile(helper.command[8])), reset)
+end
+assert(during_typing, "continuous typing starved source publication")
+assert(vim.wait(1000, function()
+  return vim.json.decode(table.concat(vim.fn.readfile(helper.command[3]))).text == "Prose $x^2$ edit 20"
+end))
 package.loaded["draft.tikz"] = prior_tikz
 for _, visible in ipairs({ false, true, false, true }) do
   preview.toggle()

@@ -69,6 +69,7 @@ local function read_state(path)
 end
 
 local function cleanup_watch()
+  require("draft.tikz").invalidate()
   if preview.timer then
     preview.timer:stop()
     preview.timer:close()
@@ -132,9 +133,11 @@ local function update_figure(source)
   preview.figure_generation = (preview.figure_generation or 0) + 1
   local generation = preview.figure_generation
   if not tikz.is_standalone(source) then
-    publish_command("reset-figure")
+    if preview.figure_mode then publish_command("reset-figure") end
+    preview.figure_mode = false
     return
   end
+  preview.figure_mode = true
   publish_command("figure") -- Clear an old error but keep the last valid SVG visible.
   local state = require("draft.sync").node_edit_state()
   local changedtick = state and state.changedtick
@@ -160,13 +163,15 @@ local function watch_preview(buffer)
     group = preview.group,
     buffer = buffer,
     callback = function()
-      -- Invalidate in-flight output as soon as the buffer changes, before debounce.
+      -- Invalidate in-flight output as soon as the buffer changes, before publication.
       preview.figure_generation = (preview.figure_generation or 0) + 1
+      require("draft.tikz").invalidate()
       if not preview.timer then
         preview.timer = vim.uv.new_timer()
       end
-      preview.timer:stop()
-      preview.timer:start(100, 0, vim.schedule_wrap(update))
+      -- Throttle publication so continuous typing cannot postpone prose forever.
+      if preview.timer:is_active() then return end
+      preview.timer:start(35, 0, vim.schedule_wrap(update))
     end,
   })
   return update()
