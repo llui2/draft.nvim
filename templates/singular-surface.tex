@@ -4,23 +4,11 @@
 
 \begin{document}
 \begin{tikzpicture}
-\begin{axis}[
-  width=8cm, height=6cm,
-  view={40}{40},
-  xlabel={$x$}, ylabel={$y$}, zlabel={$f(x,y)$},
-  xmin=-2.2, xmax=2.2, ymin=-2.2, ymax=2.2,
-  zmin=-9, zmax=0,
-  domain=0.35:2, y domain=0.35:2,
-  samples=20, samples y=20,
-  colormap/cool,
-]
-  % Excluding |x|<0.35 and |y|<0.35 keeps every sampled point finite.
-  % The four patches show the symmetry across the singular axes.
-  \addplot3[surf, shader=faceted interp] {-1/(x*y)};
-  \addplot3[surf, shader=interp, domain=-2:-0.35] {-1/(abs(x)*y)};
-  \addplot3[surf, shader=interp, y domain=-2:-0.35] {-1/(x*abs(y))};
-  \addplot3[surf, shader=interp, domain=-2:-0.35, y domain=-2:-0.35]
-    {-1/(abs(x)*abs(y))};
+\begin{axis}[colormap/cool]
+  \addplot3[
+    domain=-500:500, domain y=-500:500,
+    samples=20, samples y=20, surf
+  ] {-(1/abs(x))*(1/abs(y))};
 \end{axis}
 \end{tikzpicture}
 \end{document}

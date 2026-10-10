@@ -4,17 +4,11 @@
 
 \begin{document}
 \begin{tikzpicture}
-\begin{axis}[
-  width=8cm, height=6cm,
-  view={40}{40},
-  xlabel={$x$}, ylabel={$y$}, zlabel={$f(x,y)$},
-  domain=0:360, y domain=1:3,
-  samples=30, samples y=12,
-  colormap/cool,
-]
-  % Polar sampling uses radius r>=1, exactly the real-valued domain.
-  \addplot3[surf, shader=faceted interp]
-    ({y*cos(x)},{y*sin(x)},{sqrt((y-1)/4)});
+\begin{axis}[colormap/cool]
+  \addplot3[
+    domain=-1000:1000, domain y=-1000:1000,
+    samples=20, samples y=20, surf
+  ] {sqrt((sqrt(x^2+y^2)-1)/4)};
 \end{axis}
 \end{tikzpicture}
 \end{document}

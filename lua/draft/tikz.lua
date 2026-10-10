@@ -208,6 +208,15 @@ local function annotate_svg(svg, colors)
   end)
 end
 
+-- 3D PGFPlots prioritizes the compiled PDF over editable Cairo SVG.
+function M.is_3d(source)
+  local clean = source:gsub("\\%%", ""):gsub("%%[^\n]*", "")
+  if clean:find("\\addplot3", 1, true) or clean:find("/pgfplots/quiver", 1, true) then return true end
+  if not clean:find("\\begin%s*{axis}") then return false end
+  return clean:find("z%s*buffer%s*=") ~= nil or clean:find("shader%s*=") ~= nil
+    or clean:find("%f[%a]surf%f[%A]") ~= nil
+end
+
 local function figure_start(source)
   local first, last = source:find("\\begin%s*{tikzpicture%*?}")
   return first, last
@@ -282,11 +291,13 @@ end
 
 local function compile(request)
   local source, callback = request.source, request.callback
-  local instrumented, marker_colors = M.instrument(source)
+  local raster = M.is_3d(source)
+  local instrumented, marker_colors = source, {}
+  if not raster then instrumented, marker_colors = M.instrument(source) end
   local document = M.document(instrumented)
   if not document then callback(nil, "No standalone TikZ figure"); return end
   if vim.fn.executable("latexmk") ~= 1 then callback(nil, "latexmk is not installed"); return end
-  if vim.fn.executable("pdftocairo") ~= 1 then callback(nil, "pdftocairo is not installed (needed to convert the PDF to SVG)"); return end
+  if vim.fn.executable("pdftocairo") ~= 1 then callback(nil, "pdftocairo is not installed (needed for the figure preview)"); return end
 
   directory = directory or vim.fn.tempname() -- Neovim owns and removes this session directory.
   local output = vim.fs.joinpath(directory, "out")
@@ -309,67 +320,51 @@ local function compile(request)
       if request.revision ~= revision then finish(nil); return end
       if result.code ~= 0 then finish(nil, failure(result)); return end
       local pdf = vim.fs.joinpath(output, "figure.pdf")
-      local svg = vim.fs.joinpath(directory, "figure.svg")
-      local converted, convert_err = pcall(vim.system, { "pdftocairo", "-r", "300", "-svg", "-f", "1", "-l", "1", pdf, svg }, { text = true }, function(conversion)
-        vim.schedule(function()
-          if request.revision ~= revision then finish(nil); return end
-          if conversion.code ~= 0 then finish(nil, failure(conversion)); return end
-          local contents = vim.fn.readfile(svg)
-          if #contents == 0 then finish(nil, "PDF to SVG conversion produced no output"); return end
-          local vector = table.concat(contents, "\n")
-          -- feImage fits referenced groups to their bounding boxes in WebKit.
-          -- Cairo expects every input to cover the filter's full viewport,
-          -- including empty destinations and partially painted shading groups.
-          local bounds = {}
-          for attributes in vector:gmatch("<feImage ([^>]+)>") do
-            local id = attributes:match('href="#([^"]+)"')
-            local width, height = attributes:match('width="([%d.]+)" height="([%d.]+)"')
-            if id and width then bounds[id] = { width, height } end
-          end
-          vector = vector:gsub('(<g id="(compositing%-group%-%d+)"[^>]*>)', function(open, id)
-            local size = bounds[id]
-            if not size then return open end
-            return open .. string.format('<rect width="%s" height="%s" fill-opacity="0"/>', size[1], size[2])
-          end)
-          local _, composites = vector:gsub("<feComposite", "")
-          if composites <= 1 then finish(annotate_svg(vector, marker_colors), nil); return end
-          -- Separate Cairo shading tiles acquire seams in WebKit. Render the
-          -- authoritative PDF only for this case, retaining its page bounds.
-          local function rasterize()
-            local png = vim.fs.joinpath(directory, "figure")
-            local raster_ok, raster_err = pcall(vim.system,
-              { "pdftocairo", "-png", "-singlefile", "-r", "300", "-f", "1", "-l", "1", pdf, png },
-              { text = true }, function(raster)
-                vim.schedule(function()
-                  if request.revision ~= revision then finish(nil); return end
-                  if raster.code ~= 0 then finish(nil, failure(raster)); return end
-                  local file = io.open(png .. ".png", "rb")
-                  if not file then finish(nil, "PDF raster conversion produced no output"); return end
-                  local data = file:read("*a"); file:close()
-                  local width, height = vector:match('viewBox="0 0 ([%d.]+) ([%d.]+)"')
-                  if not width then finish(nil, "PDF conversion has no page bounds"); return end
-                  finish(string.format('<svg xmlns="http://www.w3.org/2000/svg" width="%spt" height="%spt" viewBox="0 0 %s %s" data-draft-raster="true"><image width="%s" height="%s" href="data:image/png;base64,%s"/></svg>',
-                    width, height, width, height, width, height, vim.base64.encode(data)))
-                end)
-              end)
-            if not raster_ok then finish(nil, tostring(raster_err)) end
-          end
-          -- Marker colors are for vector editing; the raster must use the
-          -- original text colors. Raster figures have no draggable SVG nodes.
-          if next(marker_colors) then
-            vim.fn.writefile(vim.split(M.document(source), "\n", { plain = true }), input)
-            local original_ok, original_err = pcall(vim.system, command, { text = true }, function(original)
-              vim.schedule(function()
-                if request.revision ~= revision then finish(nil); return end
-                if original.code ~= 0 then finish(nil, failure(original)); return end
-                rasterize()
-              end)
+      if raster then
+        -- The 300 dpi image comes directly from the compiled PDF.
+        local prefix = vim.fs.joinpath(directory, "figure")
+        local converted, convert_err = pcall(vim.system,
+          { "pdftocairo", "-png", "-singlefile", "-r", "300", "-f", "1", "-l", "1", pdf, prefix },
+          { text = true }, function(conversion)
+            vim.schedule(function()
+              if request.revision ~= revision then finish(nil); return end
+              if conversion.code ~= 0 then finish(nil, failure(conversion)); return end
+              local file = io.open(prefix .. ".png", "rb")
+              if not file then finish(nil, "PDF to PNG conversion produced no output"); return end
+              local data = file:read("*a"); file:close()
+              finish("data:image/png;base64," .. vim.base64.encode(data), nil)
             end)
-            if not original_ok then finish(nil, tostring(original_err)) end
-          else rasterize() end
-        end)
-      end)
-      if not converted then finish(nil, tostring(convert_err)) end
+          end)
+        if not converted then finish(nil, tostring(convert_err)) end
+      else
+        -- Ordinary diagrams keep source-backed editable SVG elements.
+        local svg = vim.fs.joinpath(directory, "figure.svg")
+        local converted, convert_err = pcall(vim.system,
+          { "pdftocairo", "-r", "300", "-svg", "-f", "1", "-l", "1", pdf, svg },
+          { text = true }, function(conversion)
+            vim.schedule(function()
+              if request.revision ~= revision then finish(nil); return end
+              if conversion.code ~= 0 then finish(nil, failure(conversion)); return end
+              local contents = vim.fn.readfile(svg)
+              if #contents == 0 then finish(nil, "PDF to SVG conversion produced no output"); return end
+              local vector = table.concat(contents, "\n")
+              -- Cairo's referenced filter inputs need full bounds in WebKit.
+              local bounds = {}
+              for attributes in vector:gmatch("<feImage ([^>]+)>") do
+                local id = attributes:match('href="#([^"]+)"')
+                local width, height = attributes:match('width="([%d.]+)" height="([%d.]+)"')
+                if id and width then bounds[id] = { width, height } end
+              end
+              vector = vector:gsub('(<g id="(compositing%-group%-%d+)"[^>]*>)', function(open, id)
+                local size = bounds[id]
+                if not size then return open end
+                return open .. string.format('<rect width="%s" height="%s" fill-opacity="0"/>', size[1], size[2])
+              end)
+              finish(annotate_svg(vector, marker_colors), nil)
+            end)
+          end)
+        if not converted then finish(nil, tostring(convert_err)) end
+      end
     end)
   end)
   if not ok then callback(nil, tostring(err)) end

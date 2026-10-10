@@ -6,7 +6,7 @@ local function publish_command(action, payload)
   local temporary = preview.command .. ".tmp"
   local command = { action = action, visible = not preview.hidden, nonce = vim.uv.hrtime() }
   if payload then
-    command.svg = payload.svg
+    command.figure = payload.figure
     command.error = payload.error
     command.changedtick = payload.changedtick
   end
@@ -144,9 +144,9 @@ local function update_figure(source)
   publish_command("figure") -- Preserve the last valid figure during compilation.
   local state = require("draft.sync").node_edit_state()
   local changedtick = state and state.changedtick
-  tikz.compile(source, function(svg, err)
+  tikz.compile(source, function(figure, err)
     if generation == preview.figure_generation and preview.command then
-      publish_command("figure", { svg = svg, error = err, changedtick = changedtick })
+      publish_command("figure", { figure = figure, error = err, changedtick = changedtick })
     end
   end)
 end

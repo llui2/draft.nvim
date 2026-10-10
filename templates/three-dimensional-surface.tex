@@ -4,16 +4,11 @@
 
 \begin{document}
 \begin{tikzpicture}
-\begin{axis}[
-  width=8cm, height=6cm,
-  view={40}{40},
-  xlabel={$x$}, ylabel={$y$}, zlabel={$z$},
-  domain=-2:2, y domain=-2:2,
-  samples=20, samples y=20,
-  colormap/cool,
-]
-  \addplot3[surf, shader=faceted interp]
-    {exp(-0.45*(x^2+y^2))*cos(deg(sqrt(x^2+y^2)))};
+\begin{axis}[colormap/cool, view={40}{40}]
+  \addplot3[
+    domain=-2:2, domain y=-2:2,
+    samples=20, samples y=20, surf
+  ] {exp(-0.45*(x^2+y^2))*cos(deg(sqrt(x^2+y^2)))};
 \end{axis}
 \end{tikzpicture}
 \end{document}

@@ -479,21 +479,21 @@ final class PreviewSession: NSObject, NSWindowDelegate, WKNavigationDelegate {
         case "focus-preview": focusPreview()
         case "focus-source": focusSource()
         case "figure":
-            let svg = object["svg"] as? String
+            let figure = object["figure"] as? String
             let error = object["error"] as? String
-            updateFigure(svg, error, object["changedtick"] as? Int)
+            updateFigure(figure, error, object["changedtick"] as? Int)
         case "reset-figure": webView.evaluateJavaScript("window.resetFigure()")
         default: break
         }
     }
 
-    private func updateFigure(_ svg: String?, _ error: String?, _ changedtick: Int? = nil) {
-        guard let svgJSON = try? JSONEncoder().encode(svg),
+    private func updateFigure(_ figure: String?, _ error: String?, _ changedtick: Int? = nil) {
+        guard let figureJSON = try? JSONEncoder().encode(figure),
               let errorJSON = try? JSONEncoder().encode(error),
-              let svgLiteral = String(data: svgJSON, encoding: .utf8),
+              let figureLiteral = String(data: figureJSON, encoding: .utf8),
               let errorLiteral = String(data: errorJSON, encoding: .utf8) else { return }
         let tickLiteral = changedtick.map(String.init) ?? "null"
-        webView.evaluateJavaScript("window.updateFigure(\(svgLiteral), \(errorLiteral), \(tickLiteral))") { _, error in
+        webView.evaluateJavaScript("window.updateFigure(\(figureLiteral), \(errorLiteral), \(tickLiteral))") { _, error in
             if let error { NSLog("draft.nvim: figure update failed: %@", error.localizedDescription) }
         }
     }

@@ -1,4 +1,4 @@
--- Standalone TikZ detection, asynchronous LaTeX compilation and PDF-to-SVG.
+-- Standalone TikZ detection, asynchronous LaTeX compilation and 2D SVG / 3D PNG.
 vim.opt.runtimepath:prepend(vim.fn.getcwd())
 local tikz = require("draft.tikz")
 
@@ -42,6 +42,9 @@ assert(tikz.is_standalone(plot2d))
 assert(tikz.is_standalone(surface3d))
 assert(tikz.is_standalone(pgfplotsLabel))
 assert(tikz.is_standalone(tikzLabels))
+assert(tikz.is_3d(surface3d) and not tikz.is_3d(plot2d))
+assert(tikz.is_3d("\\begin{axis}[shader=faceted interp] \\end{axis}"))
+assert(not tikz.is_3d("% \\addplot3[surf] commented out\n" .. plot2d))
 assert(not tikz.is_standalone("\\begin{document}\\begin{tikzpicture}x\\end{tikzpicture}\\end{document}"))
 local _, commentedMarkers = tikz.instrument([[% \node[name=ignored,xshift=0pt,yshift=0pt] {same text};
 \node[name=kept,xshift=0pt,yshift=0pt] {same text};]])
@@ -68,7 +71,11 @@ for index, source in ipairs(figures) do
   vim.schedule(function() responsive = true end)
   assert(vim.wait(60000, function() return result ~= nil or failure ~= nil end), "TikZ compile timed out")
   assert(responsive, "TikZ compilation blocked Neovim's event loop")
-  assert(result and result:match("<svg") and result:match("<path"), failure or ("figure " .. index .. " did not produce vector SVG"))
+  if index == 3 then
+    assert(result and result:find("data:image/png;base64,", 1, true) == 1, failure or "3D figure did not use PDF raster")
+  else
+    assert(result and result:match("<svg") and result:match("<path"), failure or ("2D figure " .. index .. " lost SVG"))
+  end
 end
 
 -- Check the actual 3D examples; isolated compilation alone does not prove
@@ -82,12 +89,8 @@ for _, name in ipairs({
   tikz.compile(source, function(svg, err) result, failure = svg, err end)
   assert(vim.wait(60000, function() return result ~= nil or failure ~= nil end),
     "3D template compilation timed out: " .. name)
-  assert(result and result:match("<svg"), failure or ("3D template did not produce SVG: " .. name))
-  if name == "singular-surface" then
-    assert(result:find('data-draft-raster="true"', 1, true), "singular surface lost its PDF raster fallback")
-  else
-    assert(result:match("<path"), "3D template did not produce vector paths: " .. name)
-  end
+  assert(result and result:find("data:image/png;base64,", 1, true) == 1,
+    failure or ("3D template did not use the compiled PDF: " .. name))
 end
 
 for _, case in ipairs({
@@ -147,33 +150,18 @@ tikz.compile(surface3d:gsub("sin%(deg%(x%*y%)%)", "\\undefinedDraftTikzCommand")
 assert(vim.wait(60000, function() return failure ~= nil end), "invalid TikZ compile timed out")
 assert(not result and failure, "invalid TikZ unexpectedly compiled")
 assert(failure:find("Undefined control sequence", 1, true), "actual TeX error was hidden")
--- Keep vector paths where WebKit compositing works; nested shading needs the PDF fallback.
+-- All 3D figures bypass Cairo SVG, while 2D diagrams remain vector.
 for _, path in ipairs(vim.fn.glob("templates/*.tex", false, true)) do
   local source = table.concat(vim.fn.readfile(path), "\n")
   result, failure = nil, nil
-  local start = vim.uv.hrtime()
-  tikz.compile(source, function(svg, err) result, failure = svg, err end)
+  tikz.compile(source, function(figure, err) result, failure = figure, err end)
   assert(vim.wait(60000, function() return result ~= nil or failure ~= nil end), path .. " timed out")
   assert(result, failure)
-  if path:match("singular") then
-    assert(result:find('data-draft-raster="true"', 1, true), "nested shading needs PDF fallback")
-    assert(result:find('data:image/png;base64,', 1, true), "PDF fallback is missing")
+  if tikz.is_3d(source) then
+    assert(result:find("data:image/png;base64,", 1, true) == 1, path .. " lost its PDF image path")
   else
-    assert(not result:find('data-draft-raster="true"', 1, true), path .. " lost its vector graphics")
-    assert(result:find("<path", 1, true), path .. " lost vector paths")
-    for id in result:gmatch('<feImage [^>]*href="#([^"]+)"') do
-      assert(result:find('<g id="' .. id:gsub('%W', '%%%0') .. '"[^>]*><rect[^>]*fill%-opacity="0"'),
-        path .. ": Cairo filter input has no full viewport bounds: " .. id)
-    end
+    assert(result:find("<svg", 1, true), path .. " lost its editable SVG path")
   end
-  if path:match("mobius") then
-    assert(result:match('<g id="compositing%-group%-2"[^>]*><rect[^>]*fill%-opacity="0"'), "empty Cairo destination still has no bounds")
-    local imageWidth = tonumber(result:match('<image [^>]*width="([%d.]+)"'))
-    local pageWidth = tonumber(result:match('viewBox="0 0 ([%d.]+)'))
-    assert(imageWidth and pageWidth and imageWidth >= pageWidth * 300 / 72.27 * 0.95,
-      "interpolated shading was not converted at approximately 300 dpi")
-  end
-  print(string.format("Draft: %s %.1f ms (%s)", path, (vim.uv.hrtime() - start) / 1e6, path:match("singular") and "300 dpi raster" or "SVG"))
 end
 
 -- Exercise the real queue under rapid editing: no overlapping latexmk,

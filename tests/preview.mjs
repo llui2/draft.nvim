@@ -169,6 +169,13 @@ const browserChecks = String.raw`
       releaseImage();
       await Promise.resolve(); await Promise.resolve();
       check(!document.querySelector('.tikz-figure svg'), 'stale decoded shading does not replace a reset figure');
+      Image.prototype.decode = () => Promise.resolve();
+      window.updateFigure('data:image/png;base64,AA==', null, 99);
+      await Promise.resolve(); await Promise.resolve();
+      check(document.querySelector('.tikz-figure > img'), '3D PDF preview is an image element');
+      check(!document.querySelector('.figure-edit'), '3D preview does not expose a pencil');
+      check(getComputedStyle(document.querySelector('.tikz-figure')).maxWidth === '460px', 'figure preview is compact');
+      window.resetFigure();
       Image.prototype.decode = decode;
       window.updateSource(['\\documentclass[tikz,border=2pt]{standalone}', '\\begin{document}\\begin{tikzpicture}\\node[name=critical,xshift=1.25pt,yshift=-0.5pt] {A};\\end{tikzpicture}\\end{document}'].join('\n'));
       window.updateFigure('<svg xmlns="http://www.w3.org/2000/svg" width="100pt" height="100pt" viewBox="0 0 100 100"><g data-draft-node="critical" data-draft-xshift="1.25" data-draft-yshift="-0.5" fill="rgb(0%, 0%, 0%)"><rect x="10" y="10" width="30" height="20"/></g></svg>', null, 37);
