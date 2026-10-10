@@ -1,5 +1,5 @@
 <h1>
-  <img src="icon.png" width="64" alt="Draft logo">
+  <img src="icon.png" width="128" alt="Draft logo">
   draft.nvim
 </h1>
 
