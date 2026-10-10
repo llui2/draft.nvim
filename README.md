@@ -3,7 +3,6 @@
   draft.nvim
 </h1>
 
-*LaTeX in flow.*
 
 Draft pairs Neovim with a live LaTeX preview on macOS. Prose, math, TikZ and PGFPlots render beside the source; `Ctrl-G` moves between them.
 
