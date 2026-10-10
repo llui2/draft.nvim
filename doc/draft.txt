@@ -31,11 +31,13 @@ switches between remembered light and dark appearances. The red close button is
 available; minimize and zoom are disabled. The preview scrollbar is hidden,
 but mouse and keyboard scrolling remain available.
 
-Standalone TikZ and PGFPlots figures compile to SVG in the same preview. Drag a
-named node with explicit numeric `xshift` and `yshift` values to move its label;
-Draft updates those offsets in the source and recompiles the figure. Hover an
-editable SVG figure to reveal a pencil; click it to enable label dragging.
-Surfaces and arbitrary plot geometry are preview-only, not directly editable.
+Standalone TikZ and PGFPlots figures render in the same preview. Hover a
+figure and click the small pencil to move supported labels or arrows directly.
+Labels need a unique `name` and numeric `xshift`/`yshift` values. Arrows need
+a `\\draw[gray,->,xshift=0pt,yshift=0pt]` path (black also works). Dragging
+updates only these offsets in the source, then recompiles. The cursor has a
+larger invisible hit target for thin arrows. Curves and 3D surfaces remain
+preview-only; the pencil is unavailable when nothing can be edited.
 
 The helper retains the exact AX terminal window captured at helper startup,
 not simply the Terminal application. Keep that source window focused during
