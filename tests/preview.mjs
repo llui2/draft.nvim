@@ -197,7 +197,7 @@ const browserChecks = String.raw`
       window.completeNodeEdit(false, 'test rejection');
       check(!editableGroup.hasAttribute('transform'), 'rejected edit rolls visual label back');
       window.removeEventListener('draft-node-edit', interceptEdit);
-      window.updateSource(['\\\\documentclass[tikz,border=2pt]{standalone}', '\\\\begin{document}\\\\begin{tikzpicture}\\\\draw[gray,->,xshift=0pt,yshift=0pt] (0,0)--(1,1);\\\\end{tikzpicture}\\\\end{document}'].join('\\n'));
+      window.updateSource(['\\documentclass[tikz,border=2pt]{standalone}', '\\begin{document}\\begin{tikzpicture}\\draw[gray,->,xshift=0pt,yshift=0pt] (0,0)--(1,1);\\end{tikzpicture}\\end{document}'].join('\n'));
       window.updateFigure('<svg xmlns="http://www.w3.org/2000/svg" width="100pt" height="100pt" viewBox="0 0 100 100"><path data-draft-node="draft-path-1" data-draft-xshift="0" data-draft-yshift="0" stroke="rgb(50%, 50%, 50%)" d="M10 80 L80 10" fill="none"/></svg>', null, 45);
       const arrowSvg = document.querySelector('.tikz-figure svg');
       const arrowGroup = arrowSvg.querySelector('g[data-draft-node="draft-path-1"]');
