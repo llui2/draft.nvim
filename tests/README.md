@@ -19,13 +19,13 @@ mocks helper compilation/lifecycle and build jobs; it does not open native windo
 `navigation.lua` follows a relative `.tex` link and verifies Ctrl-O/Ctrl-I use
 Neovim's jump list while restoring the source cursor and preserving a local mark.
 `tikz.lua` compiles TikZ diagrams, 2D PGFPlots labels and graphs, and 3D
-surfaces. It checks SVG node IDs and saved offsets, nonblocking compilation,
+surfaces. It checks editable SVG labels and arrows, source shift updates, nonblocking compilation,
 all nine shipped templates, the Möbius compositing repair, the singular-surface
 raster fallback, serial coalescing of 42 rapid requests, cache hits, and cache
 invalidation when an external LaTeX input changes. These checks do not establish
 native WebKit rendering. `preview.mjs` checks zoom-scaled pixel-to-point
 conversion, TeX's vertical sign and cumulative label offsets. Its browser page
-also simulates a named-label drag, checks the changedtick request and rollback,
+also simulates named-label and arrow drags, checks changedtick requests and rollback,
 and verifies the label moves before the edit request is released.
 `window.mjs` extracts the production geometry and foreground predicates and
 exercises them without a desktop session.
