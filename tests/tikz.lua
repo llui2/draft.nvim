@@ -29,6 +29,11 @@ local surface3d = [[
 \end{tikzpicture}
 \end{document}
 ]]
+local arrowSource = table.concat(vim.fn.readfile("templates/annotated-curves.tex"), "\n")
+local arrows = require("draft.sync").editable_arrows(arrowSource)
+assert(#arrows == 1 and arrows[1].name == "draft-path-1", "annotated arrow was not recognized")
+local markedArrow = tikz.instrument(arrowSource)
+assert(markedArrow:find("draw={rgb,255:red,", 1, true), "arrow was not marked in TeX")
 local pgfplotsLabel = table.concat(vim.fn.readfile("tests/fixtures/pgfplots-label.tex"), "\n")
 local tikzLabels = table.concat(vim.fn.readfile("tests/fixtures/tikz-labels.tex"), "\n")
 
@@ -101,6 +106,26 @@ for _, case in ipairs({
     assert(result:match('data%-draft%-yshift="%-0%.5"'))
   end
 end
+
+result, failure = nil, nil
+tikz.compile(arrowSource, function(svg, err) result, failure = svg, err end)
+assert(vim.wait(60000, function() return result ~= nil or failure ~= nil end), "editable arrow compiled too slowly")
+assert(result and result:match('data%-draft%-node="draft%-path%-1"'),
+  failure or "SVG did not identify the arrow shaft and head")
+local arrowBuffer = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_buf_set_lines(arrowBuffer, 0, -1, false, vim.split(arrowSource, "\n", { plain = true }))
+require("draft.sync").set_buffer(arrowBuffer)
+local arrowTick = require("draft.sync").node_edit_state().changedtick
+local moved = require("draft.sync").update_node_shift("draft-path-1", 4, -2, arrowTick)
+assert(moved.ok, moved.error)
+local movedArrow = table.concat(vim.api.nvim_buf_get_lines(arrowBuffer, 0, -1, false), "\n")
+assert(movedArrow:find("xshift=4pt,yshift=-2pt", 1, true), "arrow movement did not update the source")
+assert(movedArrow:find("(axis cs:0.55,0.79) -- (axis cs:0.20,1.10)", 1, true),
+  "arrow movement changed its endpoints")
+result, failure = nil, nil
+tikz.compile(movedArrow, function(svg, err) result, failure = svg, err end)
+assert(vim.wait(60000, function() return result ~= nil or failure ~= nil end))
+assert(result and result:match('data%-draft%-xshift="4"'), failure or "moved arrow failed to render")
 
 local buffer = vim.api.nvim_create_buf(true, false)
 vim.api.nvim_buf_set_lines(buffer, 0, -1, false, vim.split(pgfplotsLabel, "\n", { plain = true }))
