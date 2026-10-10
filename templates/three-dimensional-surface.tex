@@ -12,7 +12,7 @@
   samples=20, samples y=20,
   colormap/cool,
 ]
-  \addplot3[surf, shader=interp]
+  \addplot3[surf, shader=faceted interp]
     {exp(-0.45*(x^2+y^2))*cos(deg(sqrt(x^2+y^2)))};
 \end{axis}
 \end{tikzpicture}
