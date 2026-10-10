@@ -33,7 +33,9 @@ but mouse and keyboard scrolling remain available.
 
 Standalone TikZ and PGFPlots figures compile to SVG in the same preview. Drag a
 named node with explicit numeric `xshift` and `yshift` values to move its label;
-Draft updates those offsets in the source and recompiles the figure.
+Draft updates those offsets in the source and recompiles the figure. Hover an
+editable SVG figure to reveal a pencil; click it to enable label dragging.
+Surfaces and arbitrary plot geometry are preview-only, not directly editable.
 
 The helper retains the exact AX terminal window captured at helper startup,
 not simply the Terminal application. Keep that source window focused during

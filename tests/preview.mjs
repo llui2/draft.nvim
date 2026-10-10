@@ -150,6 +150,7 @@ const browserChecks = String.raw`
       check(validFigure, 'inline vector figure');
       window.updateFigure('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>', null);
       check(document.querySelector('.tikz-figure svg') === validFigure, 'identical figure does not redraw');
+      check(document.querySelector('.figure-edit').disabled, 'unsupported SVG objects cannot enter editing');
       window.updateFigure(null, null);
       check(document.querySelector('.tikz-figure svg') === validFigure, 'last valid figure survives recompilation');
       window.updateFigure(null, 'synthetic compile error');
@@ -162,6 +163,10 @@ const browserChecks = String.raw`
       window.addEventListener('draft-node-edit', interceptEdit, {once: true});
       const editableSvg = document.querySelector('.tikz-figure svg');
       const editableGroup = editableSvg.querySelector('[data-draft-node="critical"]');
+      const editButton = document.querySelector('.figure-edit');
+      check(!editButton.disabled && editButton.getAttribute('aria-pressed') === 'false', 'editable figure exposes pencil');
+      editButton.click();
+      check(editButton.getAttribute('aria-pressed') === 'true', 'pencil enables label editing');
       const box = editableGroup.getBoundingClientRect();
       const startX = box.left + box.width / 2, startY = box.top + box.height / 2;
       const beforePoint = window.draftFigureDragPoint(editableSvg, startX, startY);

@@ -66,6 +66,25 @@ for index, source in ipairs(figures) do
   assert(result and result:match("<svg") and result:match("<path"), failure or ("figure " .. index .. " did not produce vector SVG"))
 end
 
+-- Check the actual 3D examples; isolated compilation alone does not prove
+-- macOS WebKit fidelity, but catches regressions in their LaTeX sources.
+for _, name in ipairs({
+  "three-dimensional-surface", "vector-field-3d", "mobius-strip",
+  "radial-surface", "singular-surface",
+}) do
+  result, failure = nil, nil
+  local source = table.concat(vim.fn.readfile("templates/" .. name .. ".tex"), "\n")
+  tikz.compile(source, function(svg, err) result, failure = svg, err end)
+  assert(vim.wait(60000, function() return result ~= nil or failure ~= nil end),
+    "3D template compilation timed out: " .. name)
+  assert(result and result:match("<svg"), failure or ("3D template did not produce SVG: " .. name))
+  if name == "singular-surface" then
+    assert(result:find('data-draft-raster="true"', 1, true), "singular surface lost its PDF raster fallback")
+  else
+    assert(result:match("<path"), "3D template did not produce vector paths: " .. name)
+  end
+end
+
 for _, case in ipairs({
   { source = pgfplotsLabel, names = { "critical" } },
   { source = tikzLabels, names = { "left", "right" } },
@@ -120,8 +139,10 @@ for _, path in ipairs(vim.fn.glob("templates/*.tex", false, true)) do
   end
   if path:match("mobius") then
     assert(result:match('<g id="compositing%-group%-2"[^>]*><rect[^>]*fill%-opacity="0"'), "empty Cairo destination still has no bounds")
-    local imageWidth = tonumber(result:match('<image [^>]*width="(%d+)"'))
-    assert(imageWidth and imageWidth >= 600, "interpolated shading was not converted at 300 dpi")
+    local imageWidth = tonumber(result:match('<image [^>]*width="([%d.]+)"'))
+    local pageWidth = tonumber(result:match('viewBox="0 0 ([%d.]+)'))
+    assert(imageWidth and pageWidth and imageWidth >= pageWidth * 300 / 72.27 * 0.95,
+      "interpolated shading was not converted at approximately 300 dpi")
   end
   print(string.format("Draft: %s %.1f ms (%s)", path, (vim.uv.hrtime() - start) / 1e6, path:match("singular") and "300 dpi raster" or "SVG"))
 end

@@ -18,12 +18,12 @@ swiftc -typecheck lua/draft/window.swift
 mocks helper compilation/lifecycle and build jobs; it does not open native windows.
 `navigation.lua` follows a relative `.tex` link and verifies Ctrl-O/Ctrl-I use
 Neovim's jump list while restoring the source cursor and preserving a local mark.
-`tikz.lua` compiles a TikZ diagram, a 2D PGFPlots label, a 2D graph and a 3D
-surface, checks SVG node IDs and saved offsets, and verifies compilation does
-not block Neovim's event loop. It also compiles all nine shipped templates,
-checks the Möbius compositing repair and singular-surface raster fallback,
-coalesces 42 rapid requests into two serial builds, measures cached output,
-and invalidates that cache when an external LaTeX input changes. `preview.mjs` checks zoom-scaled pixel-to-point
+`tikz.lua` compiles TikZ diagrams, 2D PGFPlots labels and graphs, and 3D
+surfaces. It checks SVG node IDs and saved offsets, nonblocking compilation,
+all nine shipped templates, the Möbius compositing repair, the singular-surface
+raster fallback, serial coalescing of 42 rapid requests, cache hits, and cache
+invalidation when an external LaTeX input changes. These checks do not establish
+native WebKit rendering. `preview.mjs` checks zoom-scaled pixel-to-point
 conversion, TeX's vertical sign and cumulative label offsets. Its browser page
 also simulates a named-label drag, checks the changedtick request and rollback,
 and verifies the label moves before the edit request is released.

@@ -128,11 +128,13 @@ local function write_source(text)
   return true
 end
 
+-- Only the newest requested figure is built after an in-flight compilation.
 local function update_figure(source)
   local tikz = require("draft.tikz")
   preview.figure_generation = (preview.figure_generation or 0) + 1
   local generation = preview.figure_generation
   if not tikz.is_standalone(source) then
+    preview.queued_figure = nil
     if preview.figure_mode then publish_command("reset-figure") end
     preview.figure_mode = false
     return
@@ -140,11 +142,29 @@ local function update_figure(source)
   preview.figure_mode = true
   publish_command("figure") -- Clear an old error but keep the last valid SVG visible.
   local state = require("draft.sync").node_edit_state()
-  local changedtick = state and state.changedtick
-  tikz.compile(source, function(svg, err)
-    if generation ~= preview.figure_generation or not preview.command then return end
-    publish_command("figure", { svg = svg, error = err, changedtick = changedtick })
-  end)
+  preview.queued_figure = {
+    source = source, generation = generation,
+    changedtick = state and state.changedtick,
+  }
+  publish_command("figure") -- Keep the previous valid SVG while compiling.
+  if preview.figure_busy then return end
+  local pump
+  pump = function()
+    local request = preview.queued_figure
+    if not request or not preview.command then return end
+    preview.queued_figure = nil
+    preview.figure_busy = true
+    tikz.compile(request.source, function(svg, err)
+      preview.figure_busy = false
+      if request.generation == preview.figure_generation and preview.command then
+        publish_command("figure", {
+          svg = svg, error = err, changedtick = request.changedtick,
+        })
+      end
+      if preview.queued_figure then pump() end
+    end)
+  end
+  pump()
 end
 
 local function watch_preview(buffer)
@@ -359,6 +379,7 @@ close_preview = function()
   if preview.starting then
     preview.generation = preview.generation + 1
     preview.figure_generation = (preview.figure_generation or 0) + 1
+    preview.queued_figure = nil
     if preview.pid then pcall(vim.uv.kill, preview.pid, "sigterm") end
     preview.pid, preview.starting, preview.hidden = nil, false, false
     cleanup_startup_watch()
@@ -550,6 +571,7 @@ end
 function M.stop()
   preview.generation = preview.generation + 1
   preview.figure_generation = (preview.figure_generation or 0) + 1
+  preview.queued_figure = nil
   cleanup_startup_watch()
   if preview.pid then pcall(vim.uv.kill, preview.pid, "sigterm") end
   preview.pid, preview.starting, preview.hidden = nil, false, false

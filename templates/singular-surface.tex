@@ -1,21 +1,18 @@
-\documentclass[tikz,border=3pt]{standalone}
+\documentclass[tikz,border=2pt]{standalone}
 \usepackage{pgfplots}
-\pgfplotsset{compat=1.18}
+\pgfplotsset{compat=newest}
 
 \begin{document}
 \begin{tikzpicture}
 \begin{axis}[
-  width=10cm, height=8cm,
-  view={42}{28},
+  width=8cm, height=6cm,
+  view={40}{40},
   xlabel={$x$}, ylabel={$y$}, zlabel={$f(x,y)$},
   xmin=-2.2, xmax=2.2, ymin=-2.2, ymax=2.2,
   zmin=-9, zmax=0,
   domain=0.35:2, y domain=0.35:2,
-  samples=28, samples y=28,
-  colormap/viridis,
-  tick label style={font=\small},
-  label style={font=\small},
-  zlabel style={font=\small},
+  samples=20, samples y=20,
+  colormap/cool,
 ]
   % Excluding |x|<0.35 and |y|<0.35 keeps every sampled point finite.
   % The four patches show the symmetry across the singular axes.

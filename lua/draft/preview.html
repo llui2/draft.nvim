@@ -44,9 +44,17 @@
     .texttt { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; font-size: .9em; }
     .display { margin: 1.3em 0; overflow-x: auto; text-align: center; }
     .figure-mode { max-width: 100%; padding: 48px; }
+    .tikz-figure { position: relative; max-width: 760px; margin: 0 auto; }
     .tikz-figure svg { display: block; width: 100%; height: auto; max-height: 82vh; margin: 0 auto; }
-    .tikz-figure [data-draft-node] { cursor: grab; touch-action: none; }
-    .tikz-figure [data-draft-node].dragging { cursor: grabbing; }
+    .figure-edit { position: absolute; right: 8px; top: 8px; z-index: 2; width: 30px; height: 30px;
+      border: 1px solid rgba(128,128,128,.38); border-radius: 5px; background: var(--background);
+      color: var(--foreground); font: 20px/1 sans-serif; cursor: pointer; opacity: 0; transition: opacity .12s; }
+    .tikz-figure:hover .figure-edit, .figure-edit:focus-visible, .tikz-figure.editing .figure-edit { opacity: .88; }
+    .figure-edit:disabled { cursor: default; opacity: 0; }
+    .tikz-figure:hover .figure-edit:disabled { opacity: .35; }
+    .tikz-figure.editing .figure-edit { background: var(--sync-fill); border-color: var(--sync-line); }
+    .tikz-figure.editing [data-draft-node] { cursor: grab; touch-action: none; }
+    .tikz-figure.editing [data-draft-node].dragging { cursor: grabbing; }
     .error { color: var(--error); white-space: pre-wrap; }
     #problems { position: fixed; top: 34px; right: 14px; z-index: 10; font: 12px/1.35 -apple-system, BlinkMacSystemFont, sans-serif; }
     #problem-dot { width: 12px; height: 12px; padding: 0; border: 0; border-radius: 50%; background: var(--warning-dot); cursor: pointer; }
@@ -71,6 +79,7 @@
     let figureSVG = null;
     let figureError = null;
     let figureChangedtick = null;
+    let figureEditMode = false;
     let figureEditError = null;
     let activeFigureDrag = null;
     let pendingFigureEdit = null;
@@ -410,6 +419,23 @@
               marker.removeAttribute('data-draft-node');
             }
             figure.append(imported);
+            const edit = document.createElement('button');
+            edit.type = 'button';
+            edit.className = 'figure-edit';
+            edit.textContent = '✎';
+            edit.setAttribute('aria-label', 'Edit figure');
+            const canEdit = Boolean(imported.querySelector('[data-draft-node]')) && Number.isSafeInteger(figureChangedtick);
+            edit.disabled = !canEdit;
+            edit.title = canEdit ? 'Edit named TikZ nodes' : 'Direct editing requires named TikZ nodes with numeric xshift and yshift';
+            if (!canEdit) figureEditMode = false;
+            figure.classList.toggle('editing', figureEditMode);
+            edit.setAttribute('aria-pressed', String(figureEditMode));
+            edit.addEventListener('click', () => {
+              figureEditMode = !figureEditMode;
+              figure.classList.toggle('editing', figureEditMode);
+              edit.setAttribute('aria-pressed', String(figureEditMode));
+            });
+            figure.append(edit);
             root.append(figure);
           }
         }
@@ -716,12 +742,15 @@
     window.updateSource = function(nextSource, nextPath) {
       const changingDocument = currentDocumentPath !== null && nextPath && currentDocumentPath !== nextPath;
       if (nextSource === source && (!nextPath || nextPath === currentDocumentPath)) return;
-      if (changingDocument) documentScrollPositions.set(currentDocumentPath, window.scrollY);
+      if (changingDocument) {
+        documentScrollPositions.set(currentDocumentPath, window.scrollY);
+        figureEditMode = false;
+      }
       currentDocumentPath = nextPath || currentDocumentPath;
       source = nextSource;
       const standaloneFigure = /\\begin\s*\{tikzpicture\*?\}/.test(source)
         && (/\\documentclass\s*(?:\[[^\]]*\]\s*)?\{standalone\}/.test(source) || !/\\begin\s*\{document\}/.test(source));
-      if (standaloneFigure && document.querySelector('.tikz-figure svg')) return;
+      if (!changingDocument && standaloneFigure && document.querySelector('.tikz-figure svg')) return;
       render();
       if (changingDocument) requestAnimationFrame(() => window.scrollTo(0, documentScrollPositions.get(currentDocumentPath) || 0));
     };
@@ -758,7 +787,7 @@
       return {dx, dy, moved: true};
     }
     document.getElementById('document').addEventListener('pointerdown', event => {
-      if (event.button !== 0 || !Number.isSafeInteger(figureChangedtick)) return;
+      if (!figureEditMode || event.button !== 0 || !Number.isSafeInteger(figureChangedtick)) return;
       const target = event.target.closest?.('[data-draft-node]');
       if (!target) return;
       const name = target.dataset.draftNode;
@@ -818,7 +847,7 @@
       updateProblems([problem('warning', `Label edit rejected: ${figureEditError}`, 0, byteLength(source))]);
     };
     window.updateFigure = function(svg, error, changedtick) {
-      const changed = svg && svg !== figureSVG;
+      const changed = Boolean(svg) && svg !== figureSVG;
       if (svg) {
         figureSVG = svg;
         figureChangedtick = Number.isSafeInteger(changedtick) ? changedtick : null;
@@ -832,6 +861,7 @@
     window.resetFigure = function() {
       figureSVG = null;
       figureChangedtick = null;
+      figureEditMode = false;
       figureError = null;
       figureEditError = null;
       render();
