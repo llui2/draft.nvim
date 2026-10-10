@@ -313,7 +313,7 @@ local function find_named_nodes(source, name)
   return found
 end
 
-local function find_node_shifts(source, first, last)
+local function find_node_shifts(source, first, last, require_name)
   local shifts = { name = 0, xshift = 0, yshift = 0 }
   for _, segment in ipairs(option_segments(source, first + 1, last - 1)) do
     local key, value_first, value_last = parse_option(source, segment[1], segment[2])
@@ -329,9 +329,52 @@ local function find_node_shifts(source, first, last)
       end
     end
   end
-  if shifts.name ~= 1 then return nil, "node must have exactly one name option" end
+  if require_name ~= false and shifts.name ~= 1 then return nil, "node must have exactly one name option" end
   if shifts.xshift ~= 1 or shifts.yshift ~= 1 then return nil, "node must have exactly one xshift and yshift option" end
   return shifts
+end
+
+-- Editable arrows use ordinary TikZ draw commands with numeric offsets.
+-- Their ordinal IDs refer only to the current source revision (checked on edit).
+function M.editable_arrows(source)
+  local arrows, cursor = {}, 1
+  while cursor <= #source do
+    local char = source:sub(cursor, cursor)
+    if char == "%" then
+      local newline = source:find("\n", cursor, true)
+      if not newline then break end
+      cursor = newline + 1
+    elseif source:sub(cursor, cursor + 4) == "\\draw"
+      and not source:sub(cursor + 5, cursor + 5):match("[%a@]") then
+      local bracket = skip_space_and_comments(source, cursor + 5)
+      if source:sub(bracket, bracket) ~= "[" then
+        cursor = bracket + 1
+      else
+        local first, last = node_option_range(source, bracket)
+        if not first then break end
+        local arrow, color, unsupported_color = false, nil, false
+        for _, segment in ipairs(option_segments(source, first + 1, last - 1)) do
+          local key = parse_option(source, segment[1], segment[2])
+          if key == "->" or key == "<-" or key == "<->" or key == "-stealth" then arrow = true end
+          if key == "gray" or key == "black" then color = key end
+          if key == "draw" or key == "color" or key == "red" or key == "blue" then unsupported_color = true end
+        end
+        local shifts = find_node_shifts(source, first, last, false)
+        if arrow and shifts and not unsupported_color then
+          table.insert(arrows, {
+            name = "draft-path-" .. (#arrows + 1), first = first, last = last,
+            xshift = tonumber((source:sub(unpack(shifts.xshift_range)):gsub("pt$", ""))),
+            yshift = tonumber((source:sub(unpack(shifts.yshift_range)):gsub("pt$", ""))),
+            color = color or "black",
+          })
+        end
+        cursor = last + 1
+      end
+    else
+      cursor = cursor + 1
+    end
+  end
+  return arrows
 end
 
 -- The preview can pass arguments through luaeval's _A list, then JSON-encode
@@ -363,11 +406,16 @@ function M.update_node_shift(name, dx_pt, dy_pt, expected_tick)
 
   local lines, starts = lines_and_starts(buffer)
   local source = table.concat(lines, "\n")
-  local nodes = find_named_nodes(source, name)
-  if #nodes == 0 then return { ok = false, error = "named node not found" } end
+  local is_path = name:match("^draft%-path%-(%d+)$")
+  local nodes = is_path and M.editable_arrows(source) or find_named_nodes(source, name)
+  if is_path then
+    local chosen = nodes[tonumber(is_path)]
+    nodes = chosen and { chosen } or {}
+  end
+  if #nodes == 0 then return { ok = false, error = "editable object not found" } end
   if #nodes > 1 then return { ok = false, error = "duplicate node name" } end
   local node = nodes[1]
-  local shifts, problem = find_node_shifts(source, node.first, node.last)
+  local shifts, problem = find_node_shifts(source, node.first, node.last, not is_path)
   if not shifts then return { ok = false, error = problem } end
 
   local edits = {
