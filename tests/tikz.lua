@@ -66,6 +66,21 @@ for index, source in ipairs(figures) do
   assert(result and result:match("<svg") and result:match("<path"), failure or ("figure " .. index .. " did not produce vector SVG"))
 end
 
+-- Check the actual 3D examples; isolated compilation alone does not prove
+-- macOS WebKit fidelity, but catches regressions in their LaTeX sources.
+for _, name in ipairs({
+  "three-dimensional-surface", "vector-field-3d", "mobius-strip",
+  "radial-surface", "singular-surface",
+}) do
+  result, failure = nil, nil
+  local source = table.concat(vim.fn.readfile("templates/" .. name .. ".tex"), "\n")
+  tikz.compile(source, function(svg, err) result, failure = svg, err end)
+  assert(vim.wait(60000, function() return result ~= nil or failure ~= nil end),
+    "3D template compilation timed out: " .. name)
+  assert(result and result:match("<svg") and result:match("<path"),
+    failure or ("3D template did not produce vector SVG: " .. name))
+end
+
 for _, case in ipairs({
   { source = pgfplotsLabel, names = { "critical" } },
   { source = tikzLabels, names = { "left", "right" } },

@@ -1,28 +1,26 @@
-\documentclass[tikz,border=3pt]{standalone}
+\documentclass[tikz,border=2pt]{standalone}
 \usepackage{pgfplots}
-\pgfplotsset{compat=1.18}
+\pgfplotsset{compat=newest}
 
 \begin{document}
 \begin{tikzpicture}
 \begin{axis}[
-  width=9cm, height=7cm,
-  view={35}{25}, % Adjust the camera azimuth and elevation here.
-  axis lines=none,
-  ticks=none,
-  axis equal image,
-  colormap={strip}{color(0cm)=(blue!25); color(1cm)=(blue!75!black)},
+  width=8cm, height=6cm,
+  view={40}{40},
+  hide axis,
 ]
   % u runs around the strip; v controls its width. Increase samples to refine the mesh.
   \addplot3[
-    surf, shader=interp,
+    surf, colormap/cool, shader=faceted interp,
+    point meta=x, z buffer=sort,
     domain=0:360, y domain=-1:1,
-    samples=25, samples y=7,
+    samples=40, samples y=5,
   ]
     ({(1+y/2*cos(x/2))*cos(x)},
      {(1+y/2*cos(x/2))*sin(x)},
      {y/2*sin(x/2)});
   % The v=0 centerline lies on the surface.
-  \addplot3[black, thick, domain=0:360, samples=25]
+  \addplot3[black, thick, domain=0:360, samples=50]
     ({cos(x)},{sin(x)},{0});
 \end{axis}
 \end{tikzpicture}
