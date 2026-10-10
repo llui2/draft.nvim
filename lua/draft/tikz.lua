@@ -153,8 +153,20 @@ function M.instrument(source)
       value = string.format("{\\begingroup\\color[RGB]{%s}%s\\endgroup}", color, source:sub(label.first + 1, label.last - 1)),
     })
   end
-  for index = #replacements, 1, -1 do
-    local replacement = replacements[index]
+  -- Mark editable arrows by stroke color, preserving the exact TikZ path.
+  -- pdftocairo emits the shaft and arrowhead as separate SVG paths.
+  for index, arrow in ipairs(require("draft.sync").editable_arrows(source)) do
+    local red, green, blue = marker_color(#labels + index)
+    local rgb = string.format("%d,%d,%d", red, green, blue)
+    colors[rgb] = arrow
+    table.insert(replacements, {
+      first = arrow.first, last = arrow.last,
+      value = source:sub(arrow.first, arrow.last - 1)
+        .. string.format(",draw={rgb,255:red,%d;green,%d;blue,%d}]", red, green, blue),
+    })
+  end
+  table.sort(replacements, function(a, b) return a.first > b.first end)
+  for _, replacement in ipairs(replacements) do
     source = source:sub(1, replacement.first - 1) .. replacement.value .. source:sub(replacement.last + 1)
   end
   return source, colors
@@ -166,7 +178,7 @@ local function annotate_svg(svg, colors)
     local red, green, blue = rgb:match("^(%d+),(%d+),(%d+)$")
     expected[string.format("%d,%d,%d", tonumber(red), tonumber(green), tonumber(blue))] = label
   end
-  return svg:gsub('<g fill="rgb%(([^)]*)%)"([^>]*)>', function(rgb, attributes)
+  svg = svg:gsub('<g fill="rgb%(([^)]*)%)"([^>]*)>', function(rgb, attributes)
     local red, green, blue = rgb:match("([%d%.]+)%%,%s*([%d%.]+)%%,%s*([%d%.]+)%%")
     if not red then return '<g fill="rgb(' .. rgb .. ')"' .. attributes .. '>' end
     local key = string.format("%d,%d,%d",
@@ -174,9 +186,25 @@ local function annotate_svg(svg, colors)
       math.floor(tonumber(green) * 255 / 100 + 0.5),
       math.floor(tonumber(blue) * 255 / 100 + 0.5))
     local label = expected[key]
-    if not label then return '<g fill="rgb(' .. rgb .. ')"' .. attributes .. '>' end
+    if not label or label.color then return '<g fill="rgb(' .. rgb .. ')"' .. attributes .. '>' end
     return string.format('<g data-draft-node="%s" data-draft-xshift="%s" data-draft-yshift="%s" fill="rgb(0%%, 0%%, 0%%)"%s>',
       label.name, label.xshift, label.yshift, attributes)
+  end)
+  return svg:gsub('<path ([^>]-)>', function(attributes)
+    local color = attributes:match('stroke="rgb%(([^)]*)%)"')
+    if not color then return '<path ' .. attributes .. '>' end
+    local red, green, blue = color:match("([%d%.]+)%%,%s*([%d%.]+)%%,%s*([%d%.]+)%%")
+    if not red then return '<path ' .. attributes .. '>' end
+    local key = string.format("%d,%d,%d",
+      math.floor(tonumber(red) * 255 / 100 + 0.5),
+      math.floor(tonumber(green) * 255 / 100 + 0.5),
+      math.floor(tonumber(blue) * 255 / 100 + 0.5))
+    local arrow = expected[key]
+    if not arrow or not arrow.color then return '<path ' .. attributes .. '>' end
+    local original = arrow.color == "gray" and "rgb(50%, 50%, 50%)" or "rgb(0%, 0%, 0%)"
+    attributes = attributes:gsub('stroke="rgb%([^)]*%)"', 'stroke="' .. original .. '"', 1)
+    return string.format('<path data-draft-node="%s" data-draft-xshift="%s" data-draft-yshift="%s" %s>',
+      arrow.name, arrow.xshift, arrow.yshift, attributes)
   end)
 end
 
