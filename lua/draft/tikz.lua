@@ -214,23 +214,42 @@ local function failure(result)
   return detail or output:sub(-1800):gsub("^%s+", "")
 end
 
+-- Cache a bounded number of successful vector previews by their source.
+local svg_cache, svg_order = {}, {}
+local function remember(key, svg)
+  if not svg_cache[key] then
+    table.insert(svg_order, key)
+    if #svg_order > 6 then svg_cache[table.remove(svg_order, 1)] = nil end
+  end
+  svg_cache[key] = svg
+end
+
 function M.compile(source, callback)
   local instrumented, marker_colors = M.instrument(source)
   local document = M.document(instrumented)
   if not document then callback(nil, "No standalone TikZ figure"); return end
   if vim.fn.executable("latexmk") ~= 1 then callback(nil, "latexmk is not installed"); return end
   if vim.fn.executable("pdftocairo") ~= 1 then callback(nil, "pdftocairo is not installed (needed to convert the PDF to SVG)"); return end
+  local key = vim.fn.sha256(document)
+  if svg_cache[key] then
+    local cached = svg_cache[key]
+    vim.schedule(function() callback(cached, nil) end)
+    return
+  end
 
-  local directory = vim.fn.tempname()
+  -- The preview serializes calls, so latexmk can reuse one build workspace.
+  local directory = vim.fs.joinpath(vim.fn.stdpath("cache"), "draft.nvim", "figure-" .. vim.fn.getpid())
   local output = vim.fs.joinpath(directory, "out")
   vim.fn.mkdir(output, "p")
   local input = vim.fs.joinpath(directory, "figure.tex")
-  local written = vim.fn.writefile(vim.split(document, "\n", { plain = true }), input)
-  if written ~= 0 then vim.fn.delete(directory, "rf"); callback(nil, "could not write temporary TikZ source"); return end
+  if vim.fn.writefile(vim.split(document, "\n", { plain = true }), input) ~= 0 then
+    callback(nil, "could not write temporary TikZ source")
+    return
+  end
 
   local function finish(svg, err)
     vim.schedule(function()
-      vim.fn.delete(directory, "rf")
+      if svg then remember(key, svg) end
       callback(svg, err)
     end)
   end
@@ -243,7 +262,9 @@ function M.compile(source, callback)
       if result.code ~= 0 then finish(nil, failure(result)); return end
       local pdf = vim.fs.joinpath(output, "figure.pdf")
       local svg = vim.fs.joinpath(directory, "figure.svg")
-      local converted, convert_err = pcall(vim.system, { "pdftocairo", "-svg", "-f", "1", "-l", "1", pdf, svg }, { text = true }, function(conversion)
+      local converted, convert_err = pcall(vim.system, {
+        "pdftocairo", "-svg", "-f", "1", "-l", "1", pdf, svg,
+      }, { text = true }, function(conversion)
         vim.schedule(function()
           if conversion.code ~= 0 then finish(nil, failure(conversion)); return end
           local contents = vim.fn.readfile(svg)
@@ -254,7 +275,7 @@ function M.compile(source, callback)
       if not converted then finish(nil, tostring(convert_err)) end
     end)
   end)
-  if not ok then vim.fn.delete(directory, "rf"); callback(nil, tostring(err)) end
+  if not ok then callback(nil, tostring(err)) end
 end
 
 return M
