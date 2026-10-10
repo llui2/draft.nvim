@@ -46,14 +46,16 @@
     .figure-mode { max-width: 100%; padding: 48px; }
     .tikz-figure { position: relative; max-width: 760px; margin: 0 auto; }
     .tikz-figure svg { display: block; width: 100%; height: auto; max-height: 82vh; margin: 0 auto; }
-    .figure-edit { position: absolute; right: 8px; top: 8px; z-index: 2; width: 30px; height: 30px;
-      border: 1px solid rgba(128,128,128,.38); border-radius: 5px; background: var(--background);
-      color: var(--foreground); font: 20px/1 sans-serif; cursor: pointer; opacity: 0; transition: opacity .12s; }
+    .figure-edit { position: absolute; right: 6px; top: 6px; z-index: 2; width: 28px; height: 28px;
+      border: 0; padding: 5px; background: transparent; color: var(--foreground);
+      cursor: pointer; opacity: 0; transition: opacity .12s; }
+    .figure-edit svg { width: 18px; height: 18px; display: block; }
     .tikz-figure:hover .figure-edit, .figure-edit:focus-visible, .tikz-figure.editing .figure-edit { opacity: .88; }
     .figure-edit:disabled { cursor: default; opacity: 0; }
     .tikz-figure:hover .figure-edit:disabled { opacity: .35; }
-    .tikz-figure.editing .figure-edit { background: var(--sync-fill); border-color: var(--sync-line); }
+    .tikz-figure.editing .figure-edit { color: var(--sync-line); opacity: 1; }
     .tikz-figure.editing [data-draft-node] { cursor: grab; touch-action: none; }
+    .tikz-figure.editing [data-draft-node]:hover { opacity: .75; }
     .tikz-figure.editing [data-draft-node].dragging { cursor: grabbing; }
     .error { color: var(--error); white-space: pre-wrap; }
     #problems { position: fixed; top: 34px; right: 14px; z-index: 10; font: 12px/1.35 -apple-system, BlinkMacSystemFont, sans-serif; }
@@ -411,8 +413,8 @@
             figure.className = 'tikz-figure';
             const imported = document.importNode(svg, true);
             imported.dataset.texPtPerUnit = String(72.27 / 72);
-            for (const marker of [...imported.querySelectorAll('g[data-draft-node]')]) {
-              if (marker.parentElement !== imported || marker.hasAttribute('transform')) continue;
+            for (const marker of [...imported.querySelectorAll('[data-draft-node]')]) {
+              if (marker.parentElement !== imported) continue;
               const name = marker.dataset.draftNode;
               const wrapper = document.createElementNS('http://www.w3.org/2000/svg', 'g');
               wrapper.dataset.draftNode = name;
@@ -421,16 +423,26 @@
               imported.insertBefore(wrapper, marker);
               wrapper.append(marker);
               marker.removeAttribute('data-draft-node');
+              if (marker.localName === 'path') {
+                const hit = marker.cloneNode(false);
+                hit.removeAttribute('data-draft-node');
+                hit.setAttribute('stroke', 'transparent');
+                hit.setAttribute('stroke-width', '12');
+                hit.setAttribute('stroke-opacity', '1');
+                hit.setAttribute('fill', 'none');
+                hit.setAttribute('pointer-events', 'stroke');
+                wrapper.append(hit);
+              }
             }
             figure.append(imported);
             const edit = document.createElement('button');
             edit.type = 'button';
             edit.className = 'figure-edit';
-            edit.textContent = '✎';
+            edit.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4l6 6M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z"/></svg>';
             edit.setAttribute('aria-label', 'Edit figure');
             const canEdit = Boolean(imported.querySelector('[data-draft-node]')) && Number.isSafeInteger(figureChangedtick);
             edit.disabled = !canEdit;
-            edit.title = canEdit ? 'Edit named TikZ nodes' : 'Direct editing requires named TikZ nodes with numeric xshift and yshift';
+            edit.title = canEdit ? 'Move editable labels and arrows' : 'No editable TikZ labels or arrows found';
             if (!canEdit) figureEditMode = false;
             figure.classList.toggle('editing', figureEditMode);
             edit.setAttribute('aria-pressed', String(figureEditMode));
