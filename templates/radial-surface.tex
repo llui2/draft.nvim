@@ -13,7 +13,7 @@
   colormap/cool,
 ]
   % Polar sampling uses radius r>=1, exactly the real-valued domain.
-  \addplot3[surf, shader=interp]
+  \addplot3[surf, shader=faceted interp]
     ({y*cos(x)},{y*sin(x)},{sqrt((y-1)/4)});
 \end{axis}
 \end{tikzpicture}
